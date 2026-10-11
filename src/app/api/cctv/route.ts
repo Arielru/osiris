@@ -564,6 +564,8 @@ const REGION_FETCHERS: Record<string, RegionFetcher> = Object.fromEntries(
  * this drops a slow region from the current response, not from the map.
  */
 const REGION_BUDGET_MS = 12_000;
+// Florida and Georgia page through thousands of records and take longer on a cold cache.
+const PAGED_REGION_BUDGET_MS = 30_000;
 
 /**
  * Regions are fetched a few at a time, not all forty-eight at once.
@@ -629,6 +631,7 @@ function refreshRegion(region: string): Promise<any[]> {
   if (existing) return existing;
 
   const started = regionPool.run(async () => {
+    const budgetMs = region === 'florida' || region === 'georgia' ? PAGED_REGION_BUDGET_MS : REGION_BUDGET_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     try {
@@ -638,10 +641,10 @@ function refreshRegion(region: string): Promise<any[]> {
         new Promise<any[]>(resolve => {
           timer = setTimeout(() => {
             timedOut = true;
-            console.warn(`[OSIRIS] cctv:${region} over ${REGION_BUDGET_MS}ms — backing off for 300s`);
+            console.warn(`[OSIRIS] cctv:${region} over ${budgetMs}ms — backing off for 300s`);
             backedOff.set(region, Date.now() + BACKOFF_MS);
             resolve([]);
-          }, REGION_BUDGET_MS);
+          }, budgetMs);
         }),
       ]);
     } finally {
@@ -763,6 +766,7 @@ export async function warmCctvCatalog() {
 /** Test seam — drops queued refreshes between cases. */
 export function clearCctvRefreshes() {
   refreshing.clear();
+  backedOff.clear();
   regionPool.reset();
   restoring = undefined;
   clearPayload();
@@ -793,7 +797,8 @@ async function collectRegions(regions: string[]): Promise<{ cameras: Record<stri
     .then(result => { if (result.length) cameras[region] = result; })
     .catch(() => { /* the cache logs it and keeps the last good index */ }));
 
-  const budget = Object.keys(cameras).length ? WARM_GRACE_MS : REGION_BUDGET_MS;
+  const slowSingleRegion = missing.length === 1 && (missing[0] === 'florida' || missing[0] === 'georgia');
+  const budget = Object.keys(cameras).length ? WARM_GRACE_MS : slowSingleRegion ? PAGED_REGION_BUDGET_MS : REGION_BUDGET_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, budget); });
   await Promise.race([Promise.all(fetches), deadline]);

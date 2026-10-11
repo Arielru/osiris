@@ -72,6 +72,8 @@ export interface Ibi511Source {
   idPrefix: string;
   /** The agency shown on the camera card. */
   source: string;
+  /** Use public JPEGs when a deployment advertises inaccessible HLS streams. */
+  snapshotOnly?: boolean;
   /** Caption of last resort, when a row names neither a city nor a county. */
   state: string;
   /** Drops mis-geocoded rows — every one of these feeds has a few. */
@@ -169,7 +171,7 @@ export function mapIbi511Record(rec: Ibi511Record, cfg: Ibi511Source): CctvCamer
      serve fine, which is what those cameras show instead. Louisiana and
      Arizona set it on none. */
   const gated = img.isVideoAuthRequired === true;
-  const video = img.videoDisabled || gated ? undefined : hlsUrl(img.videoUrl);
+  const video = img.videoDisabled || gated || cfg.snapshotOnly ? undefined : hlsUrl(img.videoUrl);
   if (!snapshot && !video) return null;
 
   return {

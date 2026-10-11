@@ -138,6 +138,15 @@ describe('mapIbi511Record', () => {
     expect(open?.stream_url).toBe('https://dis-se18.divas.cloud:8200/chan-1_h/index.m3u8');
   });
 
+  it('uses public snapshots when the provider video edge is inaccessible', () => {
+    const cam = mapIbi511Record(
+      { ...sample, images: [{ ...sample.images![0], isVideoAuthRequired: false }] },
+      { ...FDOT, snapshotOnly: true },
+    );
+    expect(cam?.feed_url).toBe('https://fl511.com/map/Cctv/1');
+    expect(cam?.stream_url).toBeUndefined();
+    expect(cam?.stream_type).toBeUndefined();
+  });
   it('honours videoDisabled without dropping the camera', () => {
     const cam = mapIbi511Record({ ...sample, images: [{ ...sample.images![0], videoDisabled: true }] }, FDOT);
     expect(cam?.stream_url).toBeUndefined();
