@@ -25,7 +25,7 @@ export type Camera = Record<string, unknown>;
 export type RegionCameras = Record<string, Camera[]>;
 
 const SNAPSHOT_VERSION = 2;
-const INVALIDATED_LEGACY_REGIONS = new Set(['texas', 'florida', 'georgia', 'northcarolina']);
+const INVALIDATED_LEGACY_REGIONS = new Set(['texas', 'florida', 'georgia', 'northcarolina', 'canada']);
 
 /** Overridable so a test never writes into the real cache directory. */
 export const snapshotPath = () =>

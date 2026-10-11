@@ -8,9 +8,10 @@ import type { CctvCamera } from './types';
  * they all expose cameras the same way: a DataTables endpoint at
  * `/List/GetData/Cameras` that pages 100 rows at a time, with each row's
  * position as WKT. Utah and Nevada read the query builder and WKT parser from
- * here; Florida, Georgia, North Carolina and Arizona read the whole loader.
+ * here; Florida, Georgia, North Carolina and Arizona read the whole loader,
+ * and so do Ontario and Alberta, whose 511 sites are the same stack.
  *
- * Each of those four publishes the same record shape, so the only thing that
+ * Each of those publishes the same record shape, so the only thing that
  * differs between them is the domain, the bounding box, and the wording of
  * their `location` column — which `cameraLabel` handles for all of them.
  */
@@ -76,6 +77,19 @@ export interface Ibi511Source {
   snapshotOnly?: boolean;
   /** Caption of last resort, when a row names neither a city nor a county. */
   state: string;
+  /** Defaults to `US`. */
+  country?: string;
+  /**
+   * Follows a county name in the caption; defaults to ` County`. Ontario's
+   * `county` column holds cities and regions — "Toronto", "Durham" — so it
+   * passes an empty string.
+   */
+  countySuffix?: string;
+  /**
+   * Rows per request; defaults to 100. Alberta answers 500 to anything above
+   * 50.
+   */
+  pageSize?: number;
   /** Drops mis-geocoded rows — every one of these feeds has a few. */
   bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number };
 }
@@ -134,11 +148,11 @@ export function cameraLabel(rec: Ibi511Record): string | null {
 }
 
 /** Where the camera is, for the caption under its name. */
-export function cameraCity(rec: Ibi511Record, state: string): string {
+export function cameraCity(rec: Ibi511Record, state: string, countySuffix = ' County'): string {
   const city = rec.city?.trim();
   if (city && city !== 'N/A') return city;
   const county = rec.county?.trim();
-  if (county && county !== 'N/A') return `${county} County`;
+  if (county && county !== 'N/A') return `${county}${countySuffix}`;
   return state;
 }
 
@@ -179,8 +193,8 @@ export function mapIbi511Record(rec: Ibi511Record, cfg: Ibi511Source): CctvCamer
     lat,
     lng,
     name: cameraLabel(rec) || `${cfg.source} Camera ${rec.id}`,
-    city: cameraCity(rec, cfg.state),
-    country: 'US',
+    city: cameraCity(rec, cfg.state, cfg.countySuffix),
+    country: cfg.country ?? 'US',
     ...(snapshot ? { feed_url: snapshot } : {}),
     ...(video ? { stream_url: video, stream_type: 'hls' as const } : {}),
     source: cfg.source,
@@ -188,7 +202,7 @@ export function mapIbi511Record(rec: Ibi511Record, cfg: Ibi511Source): CctvCamer
 }
 
 async function fetchPage(cfg: Ibi511Source, start: number): Promise<{ rows: Ibi511Record[]; total: number }> {
-  const url = `${cfg.base}/List/GetData/Cameras?query=${buildQuery(start, PAGE_SIZE)}&lang=en`;
+  const url = `${cfg.base}/List/GetData/Cameras?query=${buildQuery(start, cfg.pageSize ?? PAGE_SIZE)}&lang=en`;
   const res = await stealthFetch(url, {
     signal: AbortSignal.timeout(15000),
     headers: { 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json' },
@@ -215,8 +229,9 @@ export async function loadIbi511Cameras(cfg: Ibi511Source): Promise<CctvCamera[]
   };
   ingest(first.rows);
 
+  const pageSize = cfg.pageSize ?? PAGE_SIZE;
   const starts: number[] = [];
-  for (let s = PAGE_SIZE; s < first.total && s < PAGE_SIZE * MAX_PAGES; s += PAGE_SIZE) {
+  for (let s = pageSize; s < first.total && s < pageSize * MAX_PAGES; s += pageSize) {
     starts.push(s);
   }
 

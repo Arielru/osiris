@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { cameraCity, cameraLabel, mapIbi511Record, parseWkt, type Ibi511Record, type Ibi511Source } from './ibi511';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { cameraCity, cameraLabel, loadIbi511Cameras, mapIbi511Record, parseWkt, type Ibi511Record, type Ibi511Source } from './ibi511';
 import { fetchFloridaCameras } from './florida';
 import { fetchGeorgiaCameras } from './georgia';
 import { fetchNorthCarolinaCameras } from './northcarolina';
 import { fetchArizonaCameras } from './arizona';
+import { fetchOntarioCameras } from './ontario';
+import { fetchAlbertaCameras } from './alberta';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const FDOT: Ibi511Source = {
   base: 'https://fl511.com',
@@ -11,6 +15,16 @@ const FDOT: Ibi511Source = {
   source: 'FDOT',
   state: 'Florida',
   bounds: { minLat: 24.4, maxLat: 31.1, minLng: -87.7, maxLng: -79.9 },
+};
+
+const MTO: Ibi511Source = {
+  base: 'https://511on.ca',
+  idPrefix: 'on',
+  source: '511 Ontario',
+  state: 'Ontario',
+  country: 'Canada',
+  countySuffix: '',
+  bounds: { minLat: 41.6, maxLat: 57.0, minLng: -95.3, maxLng: -74.2 },
 };
 
 /** A representative row from fl511.com/List/GetData/Cameras. */
@@ -75,6 +89,10 @@ describe('cameraCity', () => {
     expect(cameraCity(sample, 'Florida')).toBe('Brevard County');
     expect(cameraCity({ ...sample, county: null }, 'Florida')).toBe('Florida');
     expect(cameraCity({ ...sample, city: 'N/A', county: 'N/A' }, 'Florida')).toBe('Florida');
+  });
+
+  it('leaves the county bare where it is not a county', () => {
+    expect(cameraCity({ ...sample, county: 'Toronto' }, 'Ontario', '')).toBe('Toronto');
   });
 });
 
@@ -161,6 +179,58 @@ describe('mapIbi511Record', () => {
     expect(asGeorgia?.id).toBe('gdot-1');
     expect(mapIbi511Record(sample, FDOT)?.id).toBe('fdot-1');
   });
+
+  it('places a Canadian deployment in Canada', () => {
+    /** A row from 511on.ca/List/GetData/Cameras. */
+    const qew: Ibi511Record = {
+      id: 1283,
+      roadway: 'QEW',
+      direction: 'Unknown',
+      location: 'QEW East of Concession Road',
+      county: 'Niagara',
+      latLng: { geography: { wellKnownText: 'POINT (-78.925595 42.911243)' } },
+      images: [{ imageUrl: '/map/Cctv/2555', blocked: false, disabled: false }],
+    };
+    expect(mapIbi511Record(qew, MTO)).toEqual({
+      id: 'on-1283',
+      lat: 42.911243,
+      lng: -78.925595,
+      name: 'QEW East of Concession Road',
+      city: 'Niagara',
+      country: 'Canada',
+      feed_url: 'https://511on.ca/map/Cctv/2555',
+      source: '511 Ontario',
+    });
+  });
+});
+
+describe('loadIbi511Cameras', () => {
+  /* 511 Alberta answers 500 to a page of more than fifty rows, so a
+     deployment has to be able to ask for less than the usual hundred. */
+  it('pages at the size the deployment asks for', async () => {
+    const asked: Array<{ start: number; length: number }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const query = JSON.parse(new URL(String(input)).searchParams.get('query') ?? '{}');
+      asked.push({ start: query.start, length: query.length });
+      const rows = Array.from({ length: Math.min(query.length, 120 - query.start) }, (_, i) => ({
+        ...sample,
+        id: query.start + i + 1,
+        latLng: { geography: { wellKnownText: 'POINT (-114.2 51.1)' } },
+      }));
+      return Response.json({ recordsTotal: 120, data: rows });
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const cams = await loadIbi511Cameras({
+      ...MTO, base: 'https://511.alberta.ca', idPrefix: 'ab', pageSize: 50,
+      bounds: { minLat: 48.9, maxLat: 60.1, minLng: -120.1, maxLng: -109.9 },
+    });
+
+    expect(asked.sort((a, b) => a.start - b.start)).toEqual([
+      { start: 0, length: 50 }, { start: 50, length: 50 }, { start: 100, length: 50 },
+    ]);
+    expect(cams).toHaveLength(120);
+  });
 });
 
 describe('parseWkt', () => {
@@ -176,12 +246,14 @@ describe('parseWkt', () => {
 // Live integration test — opt in with RUN_LIVE_TESTS=1 (hits the real endpoints).
 const liveIt = process.env.RUN_LIVE_TESTS === '1' ? it : it.skip;
 
-describe('live southern-tier feeds', () => {
+describe('live IBI 511 feeds', () => {
   const cases: Array<[string, () => Promise<unknown[]>, number, { minLat: number; maxLat: number; minLng: number; maxLng: number }]> = [
     ['Florida', fetchFloridaCameras, 3000, FDOT.bounds],
     ['Georgia', fetchGeorgiaCameras, 2500, { minLat: 30.3, maxLat: 35.1, minLng: -85.7, maxLng: -80.8 }],
     ['North Carolina', fetchNorthCarolinaCameras, 800, { minLat: 33.8, maxLat: 36.6, minLng: -84.4, maxLng: -75.4 }],
     ['Arizona', fetchArizonaCameras, 400, { minLat: 31.3, maxLat: 37.1, minLng: -115.0, maxLng: -109.0 }],
+    ['Ontario', fetchOntarioCameras, 700, MTO.bounds],
+    ['Alberta', fetchAlbertaCameras, 250, { minLat: 48.9, maxLat: 60.1, minLng: -120.1, maxLng: -109.9 }],
   ];
 
   for (const [name, fetcher, atLeast, bounds] of cases) {
