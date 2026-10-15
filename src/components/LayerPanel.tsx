@@ -58,7 +58,9 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'sdk_sea', label: 'Maritime Lines', dataKey: 'sdk_entities' },
       { key: 'live_clouds', label: 'Live Clouds', description: 'NOAA satellites · lit in 3D · hourly', dataKey: '' },
       { key: 'wind', label: 'Wind', description: 'NOAA GFS · surface wind · 6-hourly', dataKey: '' },
+      { key: 'wind_controls', label: 'Time Controls', description: '3 days back · 5 ahead', dataKey: '', parent: 'wind' },
       { key: 'rain', label: 'Rain', description: 'RainViewer radar · every 10 min', dataKey: '' },
+      { key: 'rain_controls', label: 'Time Controls', description: 'Last 2 hours · loop', dataKey: '', parent: 'rain' },
     ],
   },
   {
@@ -234,13 +236,15 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
     </div>
   ) : null;
 
-  /** Switch a whole group at once — off if any are on, otherwise all on. */
+  /** Switch a whole group at once — off if any are on, otherwise all on.
+   *  Sub-layers keep their setting: they only say how their parent shows. */
   const toggleGroup = (layers: LayerDef[]) => {
-    const anyOn = layers.some(l => activeLayers[l.key]);
-    if (!anyOn && layers.some(l => l.key === 'terrain_elevation' || l.key === 'terrain_3d')) on3DModeSelected?.();
+    const top = layers.filter(l => !l.parent);
+    const anyOn = top.some(l => activeLayers[l.key]);
+    if (!anyOn && top.some(l => l.key === 'terrain_elevation' || l.key === 'terrain_3d')) on3DModeSelected?.();
     setActiveLayers((prev: any) => {
       const next = { ...prev };
-      for (const l of layers) next[l.key] = !anyOn;
+      for (const l of top) next[l.key] = !anyOn;
       return next;
     });
   };
@@ -362,7 +366,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
       }}
     >
       <div className="flex-1 flex flex-col items-center gap-1">
-        {visibleGroups.map((group) => {
+        {visibleGroups.map((group, index) => {
           /* Sub-layers modify a parent rather than draw anything of their own,
              so they do not count towards the rail's reading. */
           const counted = group.layers.filter(l => !l.parent);
@@ -426,7 +430,8 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                 )}
               </button>
 
-              {/* Flyout (LEFT side) */}
+              {/* Flyout (LEFT side). Centred on its icon, but the first hangs
+                  down from it: the top of the rail leaves no room above. */}
               <AnimatePresence>
                 {isOpen && (
                   <motion.div
@@ -434,7 +439,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                     animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
                     exit={{ opacity: 0, x: -4, filter: 'blur(2px)' }}
                     transition={{ duration: 0.18, ease: 'easeOut' }}
-                    className="absolute left-[52px] top-1/2 -translate-y-1/2 min-w-[220px] rounded-xl p-3 z-[100] pointer-events-auto"
+                    className={`absolute left-[52px] ${index === 0 ? 'top-0' : 'top-1/2 -translate-y-1/2'} min-w-[220px] rounded-xl p-3 z-[100] pointer-events-auto`}
                     style={{
                       background: 'rgba(0,0,0,0.6)',
                       backdropFilter: 'blur(40px) saturate(1.5)',

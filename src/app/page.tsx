@@ -499,6 +499,10 @@ export default function Dashboard() {
        Off until asked for, like the clouds. */
     wind: false,
     rain: false,
+    /* Their time boxes at the bottom left — see WindBar and RainBar. On, so
+       turning the layer on brings its controls; off, the layer shows now. */
+    wind_controls: true,
+    rain_controls: true,
     terrain_3d: false,
     terrain_elevation: false,
     malware: false,
@@ -678,9 +682,13 @@ export default function Dashboard() {
     const layers = p.get('layers');
     if (layers) {
       const active = layers.split(',');
+      // The weather time boxes came after these links. A link with no
+      // *_controls at all is from before them: the boxes stay on, as by default.
+      const older = !active.some(a => a.endsWith('_controls'));
+      const boxOn = (k: string) => older && (k === 'wind_controls' || k === 'rain_controls');
       setActiveLayers(prev => {
         const next = { ...prev };
-        Object.keys(next).forEach(k => { (next as any)[k] = active.includes(k); });
+        Object.keys(next).forEach(k => { (next as any)[k] = active.includes(k) || boxOn(k); });
         return next;
       });
     }
@@ -759,7 +767,7 @@ export default function Dashboard() {
       setOiFocus(false);
       return;
     }
-    const KEEP = new Set(['day_night', 'live_clouds', 'wind', 'rain', 'terrain_3d', 'terrain_elevation']);
+    const KEEP = new Set(['day_night', 'live_clouds', 'wind', 'wind_controls', 'rain', 'rain_controls', 'terrain_3d', 'terrain_elevation']);
     setActiveLayers(prev => {
       focusSaved.current = prev;
       return Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, KEEP.has(k) ? v : false])) as typeof prev;
@@ -1549,7 +1557,7 @@ export default function Dashboard() {
           terrainFocus={terrainFocus}
           terrainRetry={terrainRetry}
           onTerrainStatusChange={setTerrainStatus}
-          onWindOff={() => setActiveLayers(prev => ({ ...prev, wind: false }))}
+          onLayerOff={key => setActiveLayers(prev => ({ ...prev, [key]: false }))}
           mapStyle={mapStyle === 'satellite' ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : 'dark'} 
           onEntityClick={handleEntityClick} 
           onMouseCoords={handleMouseCoords} 

@@ -19,6 +19,8 @@ import SatelliteCard, { type SatelliteDetail } from '@/components/SatelliteCard'
 import CctvPreviews, { type PreviewCamera } from '@/components/CctvPreviews';
 import MapControls from '@/components/MapControls';
 import WindBar from '@/components/WindBar';
+import RainBar from '@/components/RainBar';
+import { DOCK } from '@/components/TimeBox';
 import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreviews';
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
@@ -56,8 +58,8 @@ interface OsirisMapProps {
   terrainRetry?: number;
   terrainFocus?: number;
   onTerrainStatusChange?: (status: TerrainStatus) => void;
-  /** Turns the Wind layer off, from the wind box's power button. */
-  onWindOff?: () => void;
+  /** Turns a layer off, from the power button on its box (Wind, Rain). */
+  onLayerOff?: (key: string) => void;
 
   mapStyle?: string;
   sweepData?: any;
@@ -184,7 +186,7 @@ interface AlertPinFeature {
   properties: AlertPinProps;
 }
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, onWindOff, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, route = null, userLocation = null, followUser = false, onFollowInterrupt, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
+function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, onLayerOff, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, route = null, userLocation = null, followUser = false, onFollowInterrupt, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -2722,40 +2724,8 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     return () => clearInterval(refresh);
   }, [mapReady, activeLayers.live_clouds, mapStyle]);
 
-  // Rain — RainViewer's radar mosaic, keyless, a new frame every ten minutes.
-  // Painted on the ground under the place names and under the clouds, which
-  // hang above it. Radar only reaches as far as the ground stations do.
-  useEffect(() => {
-    if (!mapReady || !mapRef.current) return;
-    const map = mapRef.current;
-    const remove = () => {
-      if (map.getLayer('rain-radar')) map.removeLayer('rain-radar');
-      if (map.getSource('rain-radar')) map.removeSource('rain-radar');
-    };
-    if (!activeLayers.rain) { remove(); return; }
-    let cancelled = false;
-    let shownTiles = '';
-    const load = () => fetch('/api/rain')
-      .then(r => (r.ok ? r.json() : null))
-      .then((frame: { tiles: string } | null) => {
-        if (cancelled || !frame?.tiles || frame.tiles === shownTiles) return;
-        shownTiles = frame.tiles;
-        remove();
-        map.addSource('rain-radar', {
-          type: 'raster', tiles: [frame.tiles], tileSize: 256, maxzoom: 7,
-          attribution: 'Rain: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
-        });
-        const satellite = map.getLayer('satellite-layer') && map.getLayoutProperty('satellite-layer', 'visibility') !== 'none';
-        const firstLabel = map.getStyle().layers.find(layer => layer.type === 'symbol')?.id;
-        const before = map.getLayer(CLOUDS_LAYER) ? CLOUDS_LAYER : satellite || !firstLabel ? 'day-night-fill' : firstLabel;
-        map.addLayer({ id: 'rain-radar', type: 'raster', source: 'rain-radar', paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0 } },
-          map.getLayer(before) ? before : undefined);
-      })
-      .catch(() => { /* keep the last frame */ });
-    load();
-    const refresh = setInterval(load, 5 * 60_000);
-    return () => { cancelled = true; clearInterval(refresh); };
-  }, [mapReady, activeLayers.rain, mapStyle]);
+  // Rain — RainViewer's radar mosaic, keyless, its last two hours as a loop.
+  // RainBar (rendered below) adds the frames and holds their time slider.
 
   // Wind — NOAA GFS surface wind as moving trails, through time. WindBar draws
   // it and holds the time slider; this only credits the source while it's on.
@@ -3470,7 +3440,12 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       )}
       {selectedSat && <SatelliteCard sat={selectedSat} onClose={clearSat} />}
       {mapReady && <MapControls mapRef={mapRef} onInteract={onFollowInterrupt} />}
-      {mapReady && activeLayers.wind && <WindBar mapRef={mapRef} onOff={onWindOff} />}
+      {mapReady && (activeLayers.wind || activeLayers.rain) && (
+        <div className={DOCK}>
+          {activeLayers.wind && <WindBar mapRef={mapRef} controls={!!activeLayers.wind_controls} onOff={() => onLayerOff?.('wind')} />}
+          {activeLayers.rain && <RainBar mapRef={mapRef} mapStyle={mapStyle} controls={!!activeLayers.rain_controls} onOff={() => onLayerOff?.('rain')} />}
+        </div>
+      )}
     </>
   );
 }
