@@ -495,6 +495,10 @@ export default function Dashboard() {
     /* NOAA's infrared cloud mosaic — see lib/live-clouds. Off until asked for:
        it veils everything under it. */
     live_clouds: false,
+    /* NOAA GFS wind as moving trails, and RainViewer radar — see lib/wind-layer.
+       Off until asked for, like the clouds. */
+    wind: false,
+    rain: false,
     terrain_3d: false,
     terrain_elevation: false,
     malware: false,
@@ -755,7 +759,7 @@ export default function Dashboard() {
       setOiFocus(false);
       return;
     }
-    const KEEP = new Set(['day_night', 'live_clouds', 'terrain_3d', 'terrain_elevation']);
+    const KEEP = new Set(['day_night', 'live_clouds', 'wind', 'rain', 'terrain_3d', 'terrain_elevation']);
     setActiveLayers(prev => {
       focusSaved.current = prev;
       return Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, KEEP.has(k) ? v : false])) as typeof prev;

@@ -6,6 +6,7 @@ import * as maplibregl from 'maplibre-gl';
 import { installTerrainTileProtocol } from '@/lib/terrain-tiles';
 import { CLOUDS_ATTRIBUTION, CLOUDS_CREDIT, CLOUDS_LAYER, frameTime } from '@/lib/live-clouds';
 import { createCloudLayer } from '@/lib/live-clouds-layer';
+import { WIND_ATTRIBUTION, WindOverlay } from '@/lib/wind-layer';
 import { attachOi, type OiGlobe, type OiHover } from '@/lib/oi/globe';
 import { attachHighlights, type Highlighter } from '@/lib/oi/highlights';
 import type { Highlight } from '@/lib/oi/assist/tools';
@@ -208,6 +209,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   const prevArcgisLayersRef = useRef<string[]>([]);
   const satLayerRef = useRef<ReturnType<typeof createSatelliteLayer> | null>(null);
   const cloudLayerRef = useRef<ReturnType<typeof createCloudLayer> | null>(null);
+  const windRef = useRef<WindOverlay | null>(null);
   const onOiGlobeRef = useRef(onOiGlobe);
   const onOiSelectRef = useRef(onOiSelect);
   const onOiHoverRef = useRef(onOiHover);
@@ -2717,6 +2719,68 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     const refresh = setInterval(() => clouds.setFrame(frameTime()), 5 * 60_000);
     return () => clearInterval(refresh);
   }, [mapReady, activeLayers.live_clouds, mapStyle]);
+
+  // Rain — RainViewer's radar mosaic, keyless, a new frame every ten minutes.
+  // Painted on the ground under the place names and under the clouds, which
+  // hang above it. Radar only reaches as far as the ground stations do.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const remove = () => {
+      if (map.getLayer('rain-radar')) map.removeLayer('rain-radar');
+      if (map.getSource('rain-radar')) map.removeSource('rain-radar');
+    };
+    if (!activeLayers.rain) { remove(); return; }
+    let cancelled = false;
+    let shownTiles = '';
+    const load = () => fetch('/api/rain')
+      .then(r => (r.ok ? r.json() : null))
+      .then((frame: { tiles: string } | null) => {
+        if (cancelled || !frame?.tiles || frame.tiles === shownTiles) return;
+        shownTiles = frame.tiles;
+        remove();
+        map.addSource('rain-radar', {
+          type: 'raster', tiles: [frame.tiles], tileSize: 256, maxzoom: 7,
+          attribution: 'Rain: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>',
+        });
+        const satellite = map.getLayer('satellite-layer') && map.getLayoutProperty('satellite-layer', 'visibility') !== 'none';
+        const firstLabel = map.getStyle().layers.find(layer => layer.type === 'symbol')?.id;
+        const before = map.getLayer(CLOUDS_LAYER) ? CLOUDS_LAYER : satellite || !firstLabel ? 'day-night-fill' : firstLabel;
+        map.addLayer({ id: 'rain-radar', type: 'raster', source: 'rain-radar', paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0 } },
+          map.getLayer(before) ? before : undefined);
+      })
+      .catch(() => { /* keep the last frame */ });
+    load();
+    const refresh = setInterval(load, 5 * 60_000);
+    return () => { cancelled = true; clearInterval(refresh); };
+  }, [mapReady, activeLayers.rain, mapStyle]);
+
+  // Wind — NOAA GFS surface wind as moving trails; see lib/wind-layer. Drawn on
+  // its own canvas over the map, so nothing is fetched until it is switched on.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    if (!activeLayers.wind) {
+      windRef.current?.remove();
+      windRef.current = null;
+      if (map.getLayer('wind-credit')) map.removeLayer('wind-credit');
+      if (map.getSource('wind-credit')) map.removeSource('wind-credit');
+      return;
+    }
+    if (!map.getSource('wind-credit')) map.addSource('wind-credit', { type: 'geojson', data: EMPTY_FC, attribution: WIND_ATTRIBUTION });
+    if (!map.getLayer('wind-credit')) map.addLayer({ id: 'wind-credit', type: 'circle', source: 'wind-credit' });
+    windRef.current ??= new WindOverlay(map);
+    const wind = windRef.current;
+    let cancelled = false;
+    const load = () => fetch('/api/wind')
+      .then(r => (r.ok ? r.json() : null))
+      .then(field => { if (!cancelled && field?.u) wind.setField(field); })
+      .catch(() => { /* keep the last field */ });
+    load();
+    const refresh = setInterval(load, 60 * 60_000);
+    return () => { cancelled = true; clearInterval(refresh); };
+  }, [mapReady, activeLayers.wind, mapStyle]);
+  useEffect(() => () => { windRef.current?.remove(); windRef.current = null; }, []);
 
   // OSIRIS OI — a prediction drawn as it happens: actors, the events of the
   // simulated worlds and arcs through the sky (see lib/oi/globe). The page feeds it
