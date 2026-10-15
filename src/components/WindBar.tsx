@@ -1,11 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pause, Play, SkipBack, SkipForward, Wind } from 'lucide-react';
+import { ArrowUp, Pause, Play, SkipBack, SkipForward, Wind } from 'lucide-react';
 import type { Map as MlMap } from 'maplibre-gl';
 import type { WindField } from '@/lib/wind-field';
-import { blendWind, bracketTime, WIND_BANDS, WIND_STYLE, WindOverlay, type WindGrid, type WindStyle } from '@/lib/wind-layer';
-import { BoxShell, Choice, clock, DAYS, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
+import { blendWind, bracketTime, sampleWind, WIND_BANDS, WIND_STYLE, WindOverlay, type WindGrid, type WindStyle } from '@/lib/wind-layer';
+import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
 
 /**
  * OSIRIS — the Wind layer: its particles, and the small box that holds its
@@ -57,6 +57,9 @@ function readSettings(): Settings {
 }
 
 const iso = (t: number) => new Date(t).toISOString();
+const POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+/** How often the map-centre reading is taken: the wind changes as the map moves and as time plays. */
+const CENTRE_MS = 250;
 
 /** "+1D 6H", "−18H" — how far the slider is from now. */
 function relative(t: number, now: number): string {
@@ -90,6 +93,8 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
   const [playing, setPlaying] = useState(false);
   const [tuning, setTuning] = useState(false);
   const [settings, setSettings] = useState<Settings>(readSettings);
+  /** The wind drawn at the middle of the map: m/s, and the bearing it blows from. */
+  const [centre, setCentre] = useState<{ speed: number; from: number } | null>(null);
 
   const seek = useCallback((t: number) => {
     timeRef.current = t;
@@ -181,6 +186,22 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
     overlay.current?.setField(blended.current);
   }, [timeline, i0, i1, w, loaded, playing, want]);
 
+  // The wind at the middle of the map, read off what the particles ride.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !controls) return;
+    const read = () => {
+      const field = blended.current;
+      if (!field) return;
+      const { lng, lat } = map.getCenter();
+      const wind = sampleWind(field, lng, lat);
+      const next = wind ? { speed: Math.hypot(wind[0], wind[1]), from: (Math.atan2(-wind[0], -wind[1]) * 180 / Math.PI + 360) % 360 } : null;
+      setCentre(prev => (prev && next && Math.abs(prev.speed - next.speed) < 0.05 && Math.abs(prev.from - next.from) < 1 ? prev : next));
+    };
+    const id = setInterval(read, CENTRE_MS);
+    return () => clearInterval(id);
+  }, [mapRef, controls]);
+
   // Play: the model clock runs at `rate` hours a second, and waits at a frame
   // that hasn't arrived rather than run ahead of the data.
   useEffect(() => {
@@ -224,6 +245,7 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
   const tone = kind === 'FORECAST' ? 'text-[var(--gold-primary)]' : kind === 'NOW' ? 'text-[var(--gold-light)]' : 'text-white/55';
   const waiting = !!timeline && !(loaded.has(timeline.times[i0]) && loaded.has(timeline.times[i1]));
   const days = timeline ? dayMarks(first, last) : [];
+  const centreBand = centre ? WIND_BANDS.findLast(b => centre.speed >= b.from) ?? WIND_BANDS[0] : null;
 
   return (
     <BoxShell
@@ -264,6 +286,20 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
         <TimeReadout at={date} rel={rel} note={rel !== 'NOW' ? kind : undefined} tone={tone} waiting={waiting} />
       ) : (
         <div className="min-h-[34px] pt-1 text-[10px] tracking-[0.18em] text-white/40">{unavailable ? 'WIND DATA UNAVAILABLE — RETRYING' : 'LOADING NOAA GFS…'}</div>
+      )}
+
+      {timeline && (
+        <AtCentre title={centreBand?.name}>
+          {centre && centreBand ? (
+            <>
+              {/* Points the way the wind is going, in its speed band's colour. */}
+              <ArrowUp aria-hidden="true" className="w-3 h-3 shrink-0" strokeWidth={2.2}
+                style={{ transform: `rotate(${centre.from + 180}deg)`, color: `rgb(${centreBand.rgb.join(',')})` }} />
+              <span className="text-[var(--gold-light)]">{Math.round(centre.speed * UNITS[settings.unit])} {settings.unit.toUpperCase()}</span>
+              <span className="text-white/45">FROM {POINTS[Math.round(centre.from / 22.5) % 16]}</span>
+            </>
+          ) : <span className="text-white/30">—</span>}
+        </AtCentre>
       )}
 
       <div className="mt-1 flex items-center gap-0.5">

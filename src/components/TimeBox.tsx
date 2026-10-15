@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, ChevronUp, Power, SlidersHorizontal, type LucideIcon } from 'lucide-react';
 
@@ -42,10 +43,18 @@ export function BoxShell({ icon: Icon, title, source, open, playing, tuning, tun
   children: React.ReactNode;
 }) {
   const name = title.toLowerCase();
+
+  useEffect(() => {
+    if (!open) return;
+    const other = (e: Event) => { if ((e as CustomEvent<string>).detail !== title && narrow()) onFold(); };
+    window.addEventListener(OPENED, other);
+    return () => window.removeEventListener(OPENED, other);
+  }, [open, title, onFold]);
+
   if (!open) {
     return (
       <motion.button
-        type="button" onClick={onOpen}
+        type="button" onClick={() => { onOpen(); window.dispatchEvent(new CustomEvent(OPENED, { detail: title })); }}
         initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2 }}
         title={`Show the ${name} controls`} aria-label={`Show the ${name} controls`} aria-expanded={false}
         className={`${PANEL} rounded-lg flex items-center gap-2 h-8 pl-2.5 pr-1.5 hover:border-[var(--gold-primary)]/40 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--gold-primary)]`}
@@ -100,8 +109,10 @@ export function BoxShell({ icon: Icon, title, source, open, playing, tuning, tun
 }
 
 /** The time in large type, and under it UTC, how far it is from now, and whether it's still loading. */
-export function TimeReadout({ at, rel, note, tone, waiting }: {
+export function TimeReadout({ at, rel, note, tone, waiting, live }: {
   at: Date; rel: string; note?: string; tone: string; waiting: boolean;
+  /** Following the newest data as it lands: a beating dot says so. */
+  live?: boolean;
 }) {
   return (
     <div className="min-h-[34px]" aria-live="off">
@@ -110,12 +121,29 @@ export function TimeReadout({ at, rel, note, tone, waiting }: {
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5 whitespace-nowrap text-[9px] tracking-[0.14em] tabular-nums">
         <span className="text-white/35">{zulu(at)}</span>
-        <span className={tone}>{rel}{note && ` · ${note}`}</span>
+        <span className={`flex items-center gap-1 ${tone}`}>
+          {live && <span aria-hidden="true" className="w-[5px] h-[5px] rounded-full bg-[var(--gold-light)] animate-pulse self-center" />}
+          {rel}{note && ` · ${note}`}
+        </span>
         {waiting && <span className="text-white/35 animate-pulse">LOADING</span>}
       </div>
     </div>
   );
 }
+
+/** What the layer says at the middle of the map, at the slider's time. */
+export function AtCentre({ title, children }: { title?: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-1.5 flex items-center gap-1.5 h-4 whitespace-nowrap text-[9px] tracking-[0.14em] tabular-nums overflow-hidden" title={title}>
+      <span className="text-white/30">MAP CENTRE</span>
+      {children}
+    </div>
+  );
+}
+
+/** A box opened on a phone folds the others: there's room for one. */
+const OPENED = 'osiris:timebox-open';
+const narrow = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
 
 /**
  * The track: solid up to now and dashed gold after it, gold between the

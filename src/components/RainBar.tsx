@@ -5,7 +5,7 @@ import { CloudRain, Pause, Play, SkipBack, SkipForward } from 'lucide-react';
 import type { ErrorEvent, Map as MlMap, MapSourceDataEvent } from 'maplibre-gl';
 import { CLOUDS_LAYER } from '@/lib/live-clouds';
 import { bracketTime } from '@/lib/wind-layer';
-import { BoxShell, Choice, clock, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
+import { AtCentre, BoxShell, Choice, clock, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
 
 /**
  * OSIRIS — the Rain layer: RainViewer's radar mosaic, and the small box that
@@ -62,6 +62,52 @@ const SNOW_SCALE = [
   { value: '50', color: '#0f4fff', name: 'Heavy snow' },
   { value: '60', color: '#002fff', name: 'Very heavy snow' },
 ];
+
+/** '#rrggbb' or 'rgba(r,g,b,a)' as [r, g, b]. */
+const rgbOf = (color: string): number[] =>
+  color.startsWith('#') ? [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16)) : color.slice(5).split(',').slice(0, 3).map(Number);
+const SCALE = [...RAIN_SCALE, ...SNOW_SCALE].map(s => ({ ...s, rgb: rgbOf(s.color) }));
+
+/** What the radar shows at a point: the nearest step of its scale, or nothing. */
+type Reading = { name: string; dbz: string; color: string } | 'none';
+function classify([r, g, b, a]: number[]): Reading {
+  if (a < 24) return 'none';
+  let best = SCALE[0];
+  let bestD = Infinity;
+  for (const s of SCALE) {
+    const d = (r - s.rgb[0]) ** 2 + (g - s.rgb[1]) ** 2 + (b - s.rgb[2]) ** 2;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return { name: best.name, dbz: best.value, color: best.color };
+}
+
+/** Radar tiles read for the map-centre line, a few kept: the map has most of them cached already. */
+const tiles = new Map<string, Promise<HTMLImageElement>>();
+function tileImage(url: string): Promise<HTMLImageElement> {
+  let image = tiles.get(url);
+  if (!image) {
+    image = new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = url;
+    });
+    image.catch(() => tiles.delete(url));
+    tiles.set(url, image);
+    if (tiles.size > 16) tiles.delete(tiles.keys().next().value!);
+  }
+  return image;
+}
+let probe: CanvasRenderingContext2D | null = null;
+function pixelAt(img: HTMLImageElement, x: number, y: number): number[] {
+  probe ??= Object.assign(document.createElement('canvas'), { width: 1, height: 1 }).getContext('2d', { willReadFrequently: true });
+  if (!probe) return [0, 0, 0, 0];
+  probe.imageSmoothingEnabled = false;
+  probe.clearRect(0, 0, 1, 1);
+  probe.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+  return [...probe.getImageData(0, 0, 1, 1).data];
+}
 
 interface Settings {
   opacity: number;
@@ -138,6 +184,8 @@ export default function RainBar({ mapRef, mapStyle, controls = true, onOff }: {
   /** Until when RainViewer is to be left alone: it refused a tile. */
   const [busyUntil, setBusyUntil] = useState(0);
   const busy = busyUntil > now;
+  /** The radar at the middle of the map, in the frame on screen. */
+  const [centre, setCentre] = useState<Reading | null>(null);
 
   /** Frames with a source and layer on the map, and the snow setting they were made with. */
   const added = useRef(new Set<number>());
@@ -354,6 +402,41 @@ export default function RainBar({ mapRef, mapStyle, controls = true, onOff }: {
     }
   }, [mapRef, radar, times, settings.snow, settings.opacity, i0, i1, w, loaded]);
 
+  // The radar at the middle of the map: the pixel there in the frame on
+  // screen, from the 512 px tile the map itself shows (so mostly cached),
+  // read again when the map settles or the frame changes.
+  const centreFrame = radar?.frames[w < 0.5 ? i0 : i1];
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !radar || !centreFrame || !controls || busy) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sample = () => {
+      const { lng, lat } = map.getCenter();
+      const z = Math.max(0, Math.min(7, Math.floor(map.getZoom())));
+      const n = 2 ** z;
+      const x = ((lng + 180) / 360) * n;
+      const rad = (Math.max(-85.05, Math.min(85.05, lat)) * Math.PI) / 180;
+      const y = ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n;
+      const tx = ((Math.floor(x) % n) + n) % n;
+      const ty = Math.min(n - 1, Math.max(0, Math.floor(y)));
+      tileImage(`${radar.host}${centreFrame.path}/512/${z}/${tx}/${ty}/2/1_${settings.snow ? 1 : 0}.png`)
+        .then(img => {
+          if (cancelled) return;
+          const size = img.naturalWidth || 512;
+          const px = Math.min(size - 1, Math.floor((x - Math.floor(x)) * size));
+          const py = Math.min(size - 1, Math.floor((y - Math.floor(y)) * size));
+          const next = classify(pixelAt(img, px, py));
+          setCentre(prev => (prev && next !== 'none' && prev !== 'none' && prev.dbz === next.dbz && prev.name === next.name ? prev : next));
+        })
+        .catch(() => { /* refused or offline: keep the last reading */ });
+    };
+    const soon = () => { clearTimeout(timer); timer = setTimeout(sample, 250); };
+    soon();
+    map.on('moveend', soon);
+    return () => { cancelled = true; clearTimeout(timer); map.off('moveend', soon); };
+  }, [mapRef, radar, centreFrame, controls, busy, settings.snow]);
+
   // Play: radar time runs at `rate` minutes a second, waits at frames that
   // haven't arrived, rests on the newest, then goes round again.
   useEffect(() => {
@@ -433,9 +516,23 @@ export default function RainBar({ mapRef, mapStyle, controls = true, onOff }: {
       )}
     >
       {radar ? (
-        <TimeReadout at={date} rel={rel} note={busy ? 'LOOP BACK IN 1 MIN' : undefined} tone={tone} waiting={waiting} />
+        <TimeReadout at={date} rel={rel} note={busy ? 'LOOP BACK IN 1 MIN' : undefined} tone={tone} waiting={waiting} live={rel === 'LIVE'} />
       ) : (
         <div className="min-h-[34px] pt-1 text-[10px] tracking-[0.18em] text-white/40">{unavailable ? 'RADAR UNAVAILABLE — RETRYING' : 'LOADING RADAR…'}</div>
+      )}
+
+      {radar && (
+        <AtCentre title={centre && centre !== 'none' ? `About ${centre.dbz} dBZ on radar` : undefined}>
+          {!centre ? <span className="text-white/30">—</span>
+            : centre === 'none' ? <span className="text-white/45">NO RAIN ON RADAR</span>
+            : (
+              <>
+                <span aria-hidden="true" className="w-2 h-2 rounded-[2px] shrink-0" style={{ background: centre.color }} />
+                <span className="text-[var(--gold-light)]">{centre.name.toUpperCase()}</span>
+                <span className="text-white/45">~{centre.dbz} dBZ</span>
+              </>
+            )}
+        </AtCentre>
       )}
 
       <div className="mt-1 flex items-center gap-0.5">
