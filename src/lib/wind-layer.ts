@@ -4,33 +4,66 @@ import type { WindField } from './wind-field';
 /**
  * OSIRIS — Wind drawn as it blows.
  *
- * Thousands of particles ride the GFS surface wind (see wind-field) and leave
- * fading trails, the way a weather map shows it. They live in lng/lat, so they
- * stay put as the map moves, curve with the globe, and the far side of the
- * planet hides them. Calm air is a faint white, strong wind turns gold.
+ * Thousands of particles ride the GFS surface wind (see wind-field), each
+ * dragging a tail through the last places it has been, the way a weather map
+ * shows it. They live in lng/lat, so they stay put as the map moves, curve
+ * with the globe, and the far side of the planet hides them. Calm air is a
+ * faint white; as the wind picks up it turns champagne, then gold, then ember
+ * at storm force.
+ *
+ * Every frame is drawn fresh from those tails rather than faded over the last
+ * one, so nothing smears or leaves a haze, motion is timed rather than counted
+ * in frames, and speed, tail length and density can change while it runs.
  */
 
 export const WIND_ATTRIBUTION = 'Wind: <a href="https://www.nco.ncep.noaa.gov/pmb/products/gfs/" target="_blank" rel="noopener">NOAA GFS</a>';
 
-/** Speed bands, m/s, and the colour a trail takes in each. */
-const BANDS: { below: number; color: string }[] = [
-  { below: 3, color: 'rgba(255,255,255,0.35)' },
-  { below: 7, color: 'rgba(255,255,255,0.6)' },
-  { below: 12, color: 'rgba(230,211,163,0.85)' },
-  { below: Infinity, color: 'rgba(212,175,55,0.95)' },
-];
-/** Screen pixels a 1 m/s wind moves a particle each frame. */
-const SPEED = 0.12;
-/** How much of last frame's trails is kept. */
-const FADE = 0.92;
-const MAX_AGE = 110;
-/** One particle per this many CSS pixels of map, within bounds. */
-const DENSITY = 450;
-const MIN_PARTICLES = 800;
-const MAX_PARTICLES = 5000;
+/** A wind grid: rows north to south, `u` east and `v` north. */
+export type WindGrid = Pick<WindField, 'ni' | 'nj' | 'la1' | 'lo1' | 'dx' | 'dy'> & { u: ArrayLike<number>; v: ArrayLike<number> };
 
-/** Wind at a point, m/s, read bilinearly off the one-degree grid. */
-export function sampleWind(field: WindField, lng: number, lat: number): [number, number] | null {
+/**
+ * Speed bands, on the Beaufort scale's boundaries (m/s where each starts),
+ * and the colour a tail takes in each. Every tail is a one-pixel line: that
+ * is the canvas's fast hairline path, several times cheaper than anything wider.
+ */
+export const WIND_BANDS: { from: number; name: string; rgb: [number, number, number]; alpha: number }[] = [
+  { from: 0, name: 'Calm to light breeze', rgb: [255, 255, 255], alpha: 0.3 },
+  { from: 3.4, name: 'Gentle breeze', rgb: [255, 255, 255], alpha: 0.55 },
+  { from: 5.5, name: 'Moderate breeze', rgb: [242, 232, 205], alpha: 0.72 },
+  { from: 8, name: 'Fresh breeze', rgb: [230, 211, 163], alpha: 0.82 },
+  { from: 10.8, name: 'Strong breeze', rgb: [224, 192, 100], alpha: 0.9 },
+  { from: 13.9, name: 'Near gale', rgb: [212, 175, 55], alpha: 0.95 },
+  { from: 17.2, name: 'Gale', rgb: [235, 135, 45], alpha: 1 },
+  { from: 24.5, name: 'Storm', rgb: [228, 80, 50], alpha: 1 },
+];
+
+export interface WindStyle {
+  /** Multiplies how fast the particles travel. */
+  speed: number;
+  /** How long a tail is, in frames at 60 fps. */
+  trail: number;
+  /** Multiplies how many particles there are. */
+  density: number;
+}
+export const WIND_STYLE: WindStyle = { speed: 1, trail: 28, density: 1 };
+
+/** Screen pixels a 1 m/s wind moves a particle in a 60 fps frame, at speed 1. */
+const SPEED = 0.12;
+/** Tail positions each particle remembers: the longest tail it can draw, at any refresh rate. */
+const TAIL = 96;
+/** Opacity along a tail, head first. */
+const LEVELS = [1, 0.7, 0.45, 0.22];
+/** One particle per this many CSS pixels of map, at density 1. */
+const DENSITY = 450;
+const MIN_PARTICLES = 600;
+const MAX_PARTICLES = 5000;
+/** A particle lives this long, ms, before it is set down somewhere new. */
+const MIN_LIFE = 1500;
+const MAX_LIFE = 3500;
+const FRAME_MS = 1000 / 60;
+
+/** Wind at a point, read bilinearly off the grid, in the grid's units. */
+export function sampleWind(field: WindGrid, lng: number, lat: number): [number, number] | null {
   const x = ((((lng - field.lo1) % 360) + 360) % 360) / field.dx;
   const y = (field.la1 - lat) / field.dy;
   if (y < 0 || y > field.nj - 1) return null;
@@ -39,26 +72,69 @@ export function sampleWind(field: WindField, lng: number, lat: number): [number,
   const i1 = (i0 + 1) % field.ni;
   const fx = x - i0;
   const fy = y - j0;
-  const at = (arr: number[], i: number, j: number) => arr[j * field.ni + i];
-  const mix = (arr: number[]) =>
+  const at = (arr: ArrayLike<number>, i: number, j: number) => arr[j * field.ni + i];
+  const mix = (arr: ArrayLike<number>) =>
     (at(arr, i0, j0) * (1 - fx) + at(arr, i1, j0) * fx) * (1 - fy) +
     (at(arr, i0, j0 + 1) * (1 - fx) + at(arr, i1, j0 + 1) * fx) * fy;
-  return [mix(field.u) / 10, mix(field.v) / 10];
+  return [mix(field.u), mix(field.v)];
+}
+
+/** The two frames either side of `t`, and how far it is from the first to the second. */
+export function bracketTime(times: number[], t: number): [number, number, number] {
+  if (times.length < 2) return [0, 0, 0];
+  let i = 0;
+  while (i < times.length - 2 && times[i + 1] <= t) i++;
+  const w = (t - times[i]) / (times[i + 1] - times[i]);
+  return [i, i + 1, Math.min(1, Math.max(0, w))];
+}
+
+/**
+ * The wind `w` of the way from frame `a` to frame `b`, in m/s. The frames are
+ * in tenths, as /api/wind sends them. Pass the last result back as `into` to
+ * reuse its arrays.
+ */
+export function blendWind(a: WindGrid, b: WindGrid, w: number, into?: WindGrid): WindGrid {
+  const n = a.u.length;
+  const reuse = into && into.u.length === n && into.u instanceof Float32Array && into.v instanceof Float32Array;
+  const u = reuse ? into.u as Float32Array : new Float32Array(n);
+  const v = reuse ? into.v as Float32Array : new Float32Array(n);
+  const to = b.u.length === n ? b : a;
+  for (let i = 0; i < n; i++) {
+    u[i] = (a.u[i] + (to.u[i] - a.u[i]) * w) / 10;
+    v[i] = (a.v[i] + (to.v[i] - a.v[i]) * w) / 10;
+  }
+  return { ni: a.ni, nj: a.nj, la1: a.la1, lo1: a.lo1, dx: a.dx, dy: a.dy, u, v };
+}
+
+function bandOf(speed: number): number {
+  for (let b = WIND_BANDS.length - 1; b > 0; b--) if (speed >= WIND_BANDS[b].from) return b;
+  return 0;
 }
 
 export class WindOverlay {
   private map: MlMap;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
-  private field: WindField | null = null;
-  private frame = 0;
+  private field: WindGrid | null = null;
+  private style: WindStyle = { ...WIND_STYLE };
+  private colors = WIND_BANDS.map(b => LEVELS.map(l => `rgba(${b.rgb.join(',')},${(b.alpha * l).toFixed(3)})`));
+  private raf = 0;
+  private last = 0;
+  /** Smoothed frame time, so a tail is as long on a 120 Hz screen as on a 60 Hz one. */
+  private frameMs = FRAME_MS;
+  private frames = 0;
   private count = 0;
   private lng = new Float64Array(0);
   private lat = new Float64Array(0);
-  private age = new Uint16Array(0);
-  private px = new Float32Array(0);
-  private py = new Float32Array(0);
-  /** Set when the map moved: the last screen positions are stale. */
+  private age = new Float32Array(0);
+  private life = new Float32Array(0);
+  private band = new Uint8Array(0);
+  /** Each particle's tail: TAIL screen positions in a ring, `head` the newest. */
+  private hx = new Float32Array(0);
+  private hy = new Float32Array(0);
+  private len = new Uint8Array(0);
+  private head = 0;
+  /** Set when the map moved: the tails' screen positions are stale. */
   private moved = true;
   private width = 0;
   private height = 0;
@@ -73,16 +149,22 @@ export class WindOverlay {
     map.on('resize', this.resize);
     map.on('move', this.onMove);
     this.resize();
-    this.frame = requestAnimationFrame(this.tick);
+    this.raf = requestAnimationFrame(this.tick);
   }
 
-  setField(field: WindField): void {
+  /** The wind to draw, in m/s; null draws nothing. */
+  setField(field: WindGrid | null): void {
     this.field = field;
-    for (let k = 0; k < this.count; k++) this.spawn(k);
+  }
+
+  setStyle(style: Partial<WindStyle>): void {
+    const recount = style.density !== undefined && style.density !== this.style.density;
+    Object.assign(this.style, style);
+    if (recount) this.allocate();
   }
 
   remove(): void {
-    cancelAnimationFrame(this.frame);
+    cancelAnimationFrame(this.raf);
     this.map.off('resize', this.resize);
     this.map.off('move', this.onMove);
     this.canvas.remove();
@@ -98,16 +180,25 @@ export class WindOverlay {
     this.canvas.style.width = `${this.width}px`;
     this.canvas.style.height = `${this.height}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const count = Math.max(MIN_PARTICLES, Math.min(MAX_PARTICLES, Math.round(this.width * this.height / DENSITY)));
+    this.allocate();
+  };
+
+  private allocate(): void {
+    const base = Math.max(MIN_PARTICLES, Math.min(MAX_PARTICLES, this.width * this.height / DENSITY));
+    const count = Math.round(base * this.style.density);
     this.count = count;
     this.lng = new Float64Array(count);
     this.lat = new Float64Array(count);
-    this.age = new Uint16Array(count);
-    this.px = new Float32Array(count);
-    this.py = new Float32Array(count);
-    for (let k = 0; k < count; k++) this.spawn(k);
+    this.age = new Float32Array(count);
+    this.life = new Float32Array(count);
+    this.band = new Uint8Array(count);
+    this.hx = new Float32Array(count * TAIL);
+    this.hy = new Float32Array(count * TAIL);
+    this.len = new Uint8Array(count);
+    // Start at random ages, so they don't all die and respawn together.
+    for (let k = 0; k < count; k++) this.spawn(k, true);
     this.moved = true;
-  };
+  }
 
   private onMove = () => { this.moved = true; };
 
@@ -116,8 +207,10 @@ export class WindOverlay {
     return transform?.isLocationOccluded?.(at) ?? false;
   }
 
-  /** A fresh particle somewhere on the visible map, at a random age. */
-  private spawn(k: number): void {
+  /** Set a particle down somewhere on the visible map, its tail starting there. */
+  private spawn(k: number, anyAge = false): void {
+    this.life[k] = MIN_LIFE + Math.random() * (MAX_LIFE - MIN_LIFE);
+    this.len[k] = 0;
     for (let tries = 0; tries < 6; tries++) {
       const x = Math.random() * this.width;
       const y = Math.random() * this.height;
@@ -127,76 +220,121 @@ export class WindOverlay {
       if (Math.abs(back.x - x) > 2 || Math.abs(back.y - y) > 2) continue; // off the globe's edge
       this.lng[k] = at.lng;
       this.lat[k] = at.lat;
-      this.px[k] = x;
-      this.py[k] = y;
-      this.age[k] = Math.floor(Math.random() * MAX_AGE);
+      this.age[k] = anyAge ? Math.random() * this.life[k] : 0;
+      this.hx[k * TAIL + this.head] = x;
+      this.hy[k * TAIL + this.head] = y;
+      this.len[k] = 1;
       return;
     }
-    this.age[k] = MAX_AGE; // nowhere to stand this frame; try again next
+    this.age[k] = this.life[k]; // nowhere to stand this frame; try again next
   }
 
-  private tick = () => {
-    this.frame = requestAnimationFrame(this.tick);
-    const field = this.field;
+  private kill(k: number): void {
+    this.age[k] = this.life[k];
+    this.len[k] = 0;
+  }
+
+  private tick = (now: number) => {
+    this.raf = requestAnimationFrame(this.tick);
+    const dt = this.last ? Math.min(now - this.last, 50) : FRAME_MS;
+    this.last = now;
+    this.frameMs += (dt - this.frameMs) * 0.05;
     const ctx = this.ctx;
-    if (!field || !this.width) return;
+    ctx.clearRect(0, 0, this.width, this.height);
+    const field = this.field;
+    if (!field || !this.width || !this.count) return;
+    const map = this.map;
 
     if (this.moved) {
-      ctx.clearRect(0, 0, this.width, this.height);
+      // The view changed under the tails: keep only where each particle is now.
       for (let k = 0; k < this.count; k++) {
-        const p = this.map.project([this.lng[k], this.lat[k]]);
-        this.px[k] = p.x;
-        this.py[k] = p.y;
+        if (!this.len[k]) continue;
+        const p = map.project([this.lng[k], this.lat[k]]);
+        this.hx[k * TAIL + this.head] = p.x;
+        this.hy[k * TAIL + this.head] = p.y;
+        this.len[k] = 1;
       }
       this.moved = false;
-    } else {
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.fillStyle = `rgba(0,0,0,${FADE})`;
-      ctx.fillRect(0, 0, this.width, this.height);
-      ctx.globalCompositeOperation = 'source-over';
     }
 
-    // Degrees per screen pixel at this zoom (512 px tiles).
-    const degPerPx = 360 / (512 * 2 ** this.map.getZoom());
-    const paths = BANDS.map(() => new Path2D());
-    let drawn = false;
+    const prevHead = this.head;
+    this.head = (this.head + 1) % TAIL;
+    // Degrees per screen pixel at this zoom (512 px tiles), so motion looks the same at every zoom.
+    const step = SPEED * this.style.speed * (360 / (512 * 2 ** map.getZoom())) * (dt / FRAME_MS);
+    this.frames++;
     for (let k = 0; k < this.count; k++) {
-      if (this.age[k] >= MAX_AGE) { this.spawn(k); continue; }
+      if (this.age[k] >= this.life[k]) { this.spawn(k); continue; }
+      this.age[k] += dt;
       const wind = sampleWind(field, this.lng[k], this.lat[k]);
-      if (!wind) { this.age[k] = MAX_AGE; continue; }
+      if (!wind) { this.kill(k); continue; }
       const [u, v] = wind;
-      const step = SPEED * degPerPx;
       const cos = Math.max(0.2, Math.cos(this.lat[k] * Math.PI / 180));
       const lng = this.lng[k] + u * step / cos;
       const lat = this.lat[k] + v * step;
       this.lng[k] = lng;
       this.lat[k] = lat;
-      this.age[k]++;
-      if (Math.abs(lat) > 85) { this.age[k] = MAX_AGE; continue; }
-      const p = this.map.project([lng, lat]);
+      if (Math.abs(lat) > 85) { this.kill(k); continue; }
+      const p = map.project([lng, lat]);
       const offscreen = p.x < 0 || p.y < 0 || p.x > this.width || p.y > this.height;
-      if (offscreen || (k % 4 === this.age[k] % 4 && this.occluded(new LngLat(lng, lat)))) {
-        this.age[k] = MAX_AGE;
-        continue;
-      }
+      if (offscreen || ((k + this.frames) % 4 === 0 && this.occluded(new LngLat(lng, lat)))) { this.kill(k); continue; }
       // A jump means the particle wrapped the antimeridian or crossed the
-      // globe's limb; start its trail over rather than streak the screen.
-      if (Math.abs(p.x - this.px[k]) < 30 && Math.abs(p.y - this.py[k]) < 30) {
-        const speed = Math.hypot(u, v);
-        const band = BANDS.findIndex(b => speed < b.below);
-        paths[band].moveTo(this.px[k], this.py[k]);
-        paths[band].lineTo(p.x, p.y);
-        drawn = true;
-      }
-      this.px[k] = p.x;
-      this.py[k] = p.y;
+      // globe's limb; start its tail over rather than streak the screen.
+      const prev = k * TAIL + prevHead;
+      if (this.len[k] && (Math.abs(p.x - this.hx[prev]) > 40 || Math.abs(p.y - this.hy[prev]) > 40)) this.len[k] = 0;
+      this.hx[k * TAIL + this.head] = p.x;
+      this.hy[k * TAIL + this.head] = p.y;
+      if (this.len[k] < TAIL) this.len[k]++;
+      this.band[k] = bandOf(Math.hypot(u, v));
     }
-    if (!drawn) return;
-    ctx.lineWidth = 1.2;
-    ctx.lineCap = 'round';
-    BANDS.forEach((band, i) => {
-      ctx.strokeStyle = band.color;
-      ctx.stroke(paths[i]);
-    });
+    this.draw();
   };
+
+  /** Every tail, batched into one path per colour band and opacity step. */
+  private draw(): void {
+    const tail = Math.max(2, Math.min(TAIL, Math.round(this.style.trail * FRAME_MS / this.frameMs)));
+    const levels = LEVELS.length;
+    const paths = WIND_BANDS.map(() => LEVELS.map(() => new Path2D()));
+    const used = WIND_BANDS.map(() => LEVELS.map(() => false));
+    for (let k = 0; k < this.count; k++) {
+      const n = Math.min(this.len[k], tail);
+      if (n < 2) continue;
+      // Fade in when set down, and out before it goes.
+      const edge = Math.min(this.age[k], this.life[k] - this.age[k]);
+      const dim = edge < 120 ? 2 : edge < 300 ? 1 : 0;
+      const band = this.band[k];
+      const base = k * TAIL;
+      let slot = this.head;
+      let x = this.hx[base + slot];
+      let y = this.hy[base + slot];
+      let level = -1;
+      let path: Path2D | null = null;
+      for (let i = 1; i < n; i++) {
+        const l = Math.floor((i - 1) * levels / (tail - 1)) + dim;
+        if (l >= levels) break;
+        slot = (slot + TAIL - 1) % TAIL;
+        const x2 = this.hx[base + slot];
+        const y2 = this.hy[base + slot];
+        if (l !== level) {
+          path = paths[band][l];
+          used[band][l] = true;
+          path.moveTo(x, y);
+          level = l;
+        }
+        path!.lineTo(x2, y2);
+        x = x2;
+        y = y2;
+      }
+    }
+    const ctx = this.ctx;
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'bevel';
+    WIND_BANDS.forEach((_, b) => {
+      for (let l = 0; l < levels; l++) {
+        if (!used[b][l]) continue;
+        ctx.strokeStyle = this.colors[b][l];
+        ctx.stroke(paths[b][l]);
+      }
+    });
+  }
 }

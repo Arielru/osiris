@@ -6,7 +6,7 @@ import * as maplibregl from 'maplibre-gl';
 import { installTerrainTileProtocol } from '@/lib/terrain-tiles';
 import { CLOUDS_ATTRIBUTION, CLOUDS_CREDIT, CLOUDS_LAYER, frameTime } from '@/lib/live-clouds';
 import { createCloudLayer } from '@/lib/live-clouds-layer';
-import { WIND_ATTRIBUTION, WindOverlay } from '@/lib/wind-layer';
+import { WIND_ATTRIBUTION } from '@/lib/wind-layer';
 import { attachOi, type OiGlobe, type OiHover } from '@/lib/oi/globe';
 import { attachHighlights, type Highlighter } from '@/lib/oi/highlights';
 import type { Highlight } from '@/lib/oi/assist/tools';
@@ -18,6 +18,7 @@ import { ALERT_KINDS, timeAgo, type AlertKind } from '@/lib/alert-digest';
 import SatelliteCard, { type SatelliteDetail } from '@/components/SatelliteCard';
 import CctvPreviews, { type PreviewCamera } from '@/components/CctvPreviews';
 import MapControls from '@/components/MapControls';
+import WindBar from '@/components/WindBar';
 import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreviews';
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
@@ -209,7 +210,6 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   const prevArcgisLayersRef = useRef<string[]>([]);
   const satLayerRef = useRef<ReturnType<typeof createSatelliteLayer> | null>(null);
   const cloudLayerRef = useRef<ReturnType<typeof createCloudLayer> | null>(null);
-  const windRef = useRef<WindOverlay | null>(null);
   const onOiGlobeRef = useRef(onOiGlobe);
   const onOiSelectRef = useRef(onOiSelect);
   const onOiHoverRef = useRef(onOiHover);
@@ -2755,32 +2755,19 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     return () => { cancelled = true; clearInterval(refresh); };
   }, [mapReady, activeLayers.rain, mapStyle]);
 
-  // Wind — NOAA GFS surface wind as moving trails; see lib/wind-layer. Drawn on
-  // its own canvas over the map, so nothing is fetched until it is switched on.
+  // Wind — NOAA GFS surface wind as moving trails, through time. WindBar draws
+  // it and holds the time slider; this only credits the source while it's on.
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     const map = mapRef.current;
     if (!activeLayers.wind) {
-      windRef.current?.remove();
-      windRef.current = null;
       if (map.getLayer('wind-credit')) map.removeLayer('wind-credit');
       if (map.getSource('wind-credit')) map.removeSource('wind-credit');
       return;
     }
     if (!map.getSource('wind-credit')) map.addSource('wind-credit', { type: 'geojson', data: EMPTY_FC, attribution: WIND_ATTRIBUTION });
     if (!map.getLayer('wind-credit')) map.addLayer({ id: 'wind-credit', type: 'circle', source: 'wind-credit' });
-    windRef.current ??= new WindOverlay(map);
-    const wind = windRef.current;
-    let cancelled = false;
-    const load = () => fetch('/api/wind')
-      .then(r => (r.ok ? r.json() : null))
-      .then(field => { if (!cancelled && field?.u) wind.setField(field); })
-      .catch(() => { /* keep the last field */ });
-    load();
-    const refresh = setInterval(load, 60 * 60_000);
-    return () => { cancelled = true; clearInterval(refresh); };
   }, [mapReady, activeLayers.wind, mapStyle]);
-  useEffect(() => () => { windRef.current?.remove(); windRef.current = null; }, []);
 
   // OSIRIS OI — a prediction drawn as it happens: actors, the events of the
   // simulated worlds and arcs through the sky (see lib/oi/globe). The page feeds it
@@ -3481,6 +3468,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       )}
       {selectedSat && <SatelliteCard sat={selectedSat} onClose={clearSat} />}
       {mapReady && <MapControls mapRef={mapRef} onInteract={onFollowInterrupt} />}
+      {mapReady && activeLayers.wind && <WindBar mapRef={mapRef} />}
     </>
   );
 }

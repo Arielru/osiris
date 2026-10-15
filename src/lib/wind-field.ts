@@ -201,21 +201,46 @@ export function toWindField(fields: GribField[], refTime: string): WindField {
   return { refTime, ni: u.ni, nj: u.nj, la1: u.la1, lo1: u.lo1, dx: u.di, dy: u.dj, u: tenths(u.values), v: tenths(v.values) };
 }
 
+const HOUR = 3600_000;
+
+/** The time slider: a frame every three hours, three days back to five ahead of the newest run. */
+export const WIND_STEP_H = 3;
+export const WIND_PAST_H = 72;
+export const WIND_AHEAD_H = 120;
+
+/** NOMADS' filter for one GFS file, cut down to the 10 m wind. */
+export function gfsUrl(cycle: number, fh: number): string {
+  const t = new Date(cycle);
+  const ymd = t.toISOString().slice(0, 10).replace(/-/g, '');
+  const hh = String(t.getUTCHours()).padStart(2, '0');
+  const fff = String(fh).padStart(3, '0');
+  return 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl'
+    + `?dir=%2Fgfs.${ymd}%2F${hh}%2Fatmos&file=gfs.t${hh}z.pgrb2.1p00.f${fff}`
+    + '&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on';
+}
+
 /**
  * The newest GFS runs worth asking for, newest first. A run lands on NOMADS
  * about four hours after its nominal time, so start five hours back.
  */
-export function gfsCycles(now: Date, count = 3): { url: string; refTime: string }[] {
-  const out: { url: string; refTime: string }[] = [];
-  const start = Math.floor((now.getTime() - 5 * 3600_000) / (6 * 3600_000)) * 6 * 3600_000;
-  for (let i = 0; i < count; i++) {
-    const t = new Date(start - i * 6 * 3600_000);
-    const ymd = t.toISOString().slice(0, 10).replace(/-/g, '');
-    const hh = String(t.getUTCHours()).padStart(2, '0');
-    const url = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_1p00.pl'
-      + `?dir=%2Fgfs.${ymd}%2F${hh}%2Fatmos&file=gfs.t${hh}z.pgrb2.1p00.f000`
-      + '&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on';
-    out.push({ url, refTime: t.toISOString() });
-  }
+export function gfsRuns(now: number, count = 3): number[] {
+  const start = Math.floor((now - 5 * HOUR) / (6 * HOUR)) * 6 * HOUR;
+  return Array.from({ length: count }, (_, i) => start - i * 6 * HOUR);
+}
+
+/** Every time the slider offers around a run, oldest first. */
+export function windTimes(run: number): number[] {
+  const out: number[] = [];
+  for (let h = -WIND_PAST_H; h <= WIND_AHEAD_H; h += WIND_STEP_H) out.push(run + h * HOUR);
   return out;
+}
+
+/**
+ * The GFS file that holds the wind at `t`. Before the newest run, the past is
+ * what the model saw at the time: the analysis of the run at or before `t`,
+ * or that run's three-hour step. From the newest run on, it is its forecast.
+ */
+export function frameSource(t: number, run: number): { cycle: number; fh: number } {
+  const cycle = t >= run ? run : Math.floor(t / (6 * HOUR)) * 6 * HOUR;
+  return { cycle, fh: Math.round((t - cycle) / HOUR) };
 }
