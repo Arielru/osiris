@@ -1549,6 +1549,7 @@ export default function Dashboard() {
           terrainFocus={terrainFocus}
           terrainRetry={terrainRetry}
           onTerrainStatusChange={setTerrainStatus}
+          onWindOff={() => setActiveLayers(prev => ({ ...prev, wind: false }))}
           mapStyle={mapStyle === 'satellite' ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : 'dark'} 
           onEntityClick={handleEntityClick} 
           onMouseCoords={handleMouseCoords} 
