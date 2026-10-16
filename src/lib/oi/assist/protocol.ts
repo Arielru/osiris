@@ -17,7 +17,7 @@
 import { extractJson } from '../parse';
 import { FIND_LAYERS, LAYERS, PANELS, SOURCES } from './catalog';
 
-export const TOOL_NAMES = ['go_to', 'layers', 'find', 'scan', 'camera', 'highlight', 'show', 'markets', 'open', 'map_view', 'forecast', 'workspace', 'select', 'clear'] as const;
+export const TOOL_NAMES = ['go_to', 'layers', 'find', 'scan', 'camera', 'highlight', 'show', 'markets', 'open', 'map_view', 'recon', 'forecast', 'workspace', 'select', 'clear'] as const;
 export type ToolName = typeof TOOL_NAMES[number];
 
 /** What the reader asked OI to concentrate on. Auto lets the model choose. */
@@ -94,6 +94,9 @@ open {panel}
 map_view {projection?: "globe"|"flat", style?: "dark"|"satellite"}
   Switch between the 3D globe and the flat map, and the night or satellite basemap.
 
+recon {tool: string, target?: string}
+  Run one OSINT lookup from the Recon panel and get the result back. tool is one of: self_track (the reader's own public-IP location — no target), shodan (Shodan InternetDB record for an IP: open ports, known CVEs, device tags), dns / whois / certs / ssl / subdomains / headers / tech (a domain or URL), bgp (an IP or ASN), mac (a MAC address), phone (a phone number), username (a handle, hunted across platforms), github (a GitHub user), threats (reputation of an IP, domain or hash), leaks (breach exposure for an email), crypto (a wallet address), vuln (CVEs for a host). target is the thing to look up (omit for self_track). Where the result can be placed, it is pinned on the map. Results come back to you.
+
 forecast {question, depth?: "quick"|"standard"|"deep"}
   Start an OI prediction: OI researches the question, casts the actors who decide it, and plays them against each other over dated periods to the horizon in several parallel simulated worlds, then writes the predicted path, what each actor does, and a calibrated figure (a probability, shares per outcome, or an estimate with a range). It makes 30 to 130 model calls on the reader's key, so only when they ask for a forecast, prediction or odds, or chose Forecast mode. Phrase the question so it resolves by a date.
 
@@ -125,6 +128,7 @@ Rules:
 - When asked to go somewhere or to see something, act: go_to, and the layers or find that show it. Prefer one step that does everything.
 - Use find with show (the default) to mark what you found; use show to list it in the conversation when the reader wants the details; use highlight for places you know that are not in the live data.
 - After RESULTS, answer from them in a sentence or two, mention the most relevant items by name, and finish with done:true. If nothing matched, say so plainly and suggest what else to try.
+- For an OSINT lookup — an IP, domain, host, username, phone, email breach, crypto wallet, MAC or ASN — or the reader's own location ("where am I", "track me"), use recon with the matching tool and done:false, then answer from the RESULTS.
 - General questions that need no map or live data: answer directly with no actions.
 - Keep within the reader's MODE: navigate means move the map and switch layers; research means gather live data and present it; forecast means start a forecast for their question (one forecast tool call, then done). auto means choose.
 - Coordinates are decimal degrees: lat −90..90, lng −180..180.

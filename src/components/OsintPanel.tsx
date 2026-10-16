@@ -7,7 +7,7 @@ import {
   LocateFixed,
   Search, Radar, Globe, Shield, FileText, Radio,
   ChevronDown, ChevronUp, Loader2, AlertTriangle, Server,
-  Wifi, Lock, MapPin, Bug, Code, Layers, Network, Fingerprint,
+  Lock, MapPin, Bug, Code, Layers, Network, Fingerprint,
   CheckCircle, XCircle, Clock, ExternalLink, Crosshair,
   Maximize2, Minimize2, Gavel, Bitcoin, Phone, Terminal, ShieldAlert, User
 } from 'lucide-react';
@@ -44,7 +44,7 @@ interface ToolDef {
 }
 
 const TABS: ToolDef[] = [
-  { id: 'scanner', label: 'PORT SCAN', icon: Radar, placeholder: 'IP or hostname', color: '#00E5FF', group: 'network', blurb: 'Open ports and running services' },
+  { id: 'scanner', label: 'PORT SCAN', icon: Radar, placeholder: 'IP address to sweep (e.g. 8.8.8.8)', color: '#00E5FF', group: 'network', blurb: 'Shodan network sweep — same as GLOBAL SWEEP' },
   { id: 'vuln', label: 'VULN SWEEP', icon: Bug, placeholder: 'IP or hostname', color: '#FF3D3D', group: 'network', blurb: 'Known CVEs affecting the host' },
   { id: 'shodan', label: 'SHODAN IOT', icon: Network, placeholder: 'IP address', color: '#FF3D3D', group: 'network', blurb: 'Internet-exposed device record' },
   { id: 'bgp', label: 'BGP ROUTE', icon: Globe, placeholder: 'IP or ASN', color: '#00E5FF', group: 'network', blurb: 'Autonomous system and prefixes' },
@@ -74,6 +74,37 @@ const TABS: ToolDef[] = [
 
 interface OsintPanelProps { isOpen?: boolean; onClose?: () => void; isMobile?: boolean; onSweepVisualize?: (data: any) => void; onScanGeolocate?: (target: string, data: any) => void; }
 
+/** A recon result as a flat, readable report for a .txt export. */
+function resultsToText(tool: string, query: string, data: unknown): string {
+  const lines: string[] = [
+    `OSIRIS RECON — ${tool.toUpperCase()}`,
+    `Target: ${query || '(none)'}`,
+    `Exported: ${new Date().toISOString()}`,
+    '',
+  ];
+  const walk = (v: unknown, indent: string) => {
+    if (v === null || v === undefined || v === '') { lines.push(`${indent}(none)`); return; }
+    if (Array.isArray(v)) {
+      if (!v.length) { lines.push(`${indent}(empty)`); return; }
+      v.forEach((item, i) => {
+        if (item && typeof item === 'object') { lines.push(`${indent}- [${i}]`); walk(item, `${indent}  `); }
+        else lines.push(`${indent}- ${item}`);
+      });
+      return;
+    }
+    if (typeof v === 'object') {
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        if (val && typeof val === 'object') { lines.push(`${indent}${k}:`); walk(val, `${indent}  `); }
+        else lines.push(`${indent}${k}: ${val}`);
+      }
+      return;
+    }
+    lines.push(`${indent}${v}`);
+  };
+  walk(data, '');
+  return lines.join('\n');
+}
+
 function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintPanelProps) {
   const [activeTab, setActiveTab] = useState('scanner');
   const [isFullScreen, setIsFullScreen] = useState(false);
@@ -81,7 +112,6 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
   const [results, setResults] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [scanType, setScanType] = useState('quick');
   const [expanded, setExpanded] = useState(true);
   const [history, setHistory] = useState<{tab:string;query:string;time:string}[]>([]);
   const [sweepResult, setSweepResult] = useState<any>(null);
@@ -186,8 +216,11 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
     if (!query.trim() || loading) return;
     setLoading(true); setError(''); setResults(null);
 
-    // IP Sweep — separate flow (only for the sweep tab)
-    if (activeTab === 'sweep') {
+    // Shodan subnet sweep. The sweep tab and the first scanner (PORT SCAN) both
+    // run it: the stand-alone /api/scanner backend needs a key and is off here,
+    // so the first scanner does what GLOBAL SWEEP does — a keyless InternetDB
+    // sweep of the target's subnet.
+    if (activeTab === 'sweep' || activeTab === 'scanner') {
       setSweepResult(null);
       const cidr = sweepCidr;
       const totalHosts = Math.pow(2, 32 - cidr);
@@ -272,7 +305,6 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
         case 'username': url = `/api/osint/username?username=${encodeURIComponent(query)}`; break;
         case 'github': url = `/api/osint/github?user=${encodeURIComponent(query)}`; break;
         case 'vuln': url = `/api/scanner?target=${encodeURIComponent(query)}&type=vuln`; break;
-        case 'scanner': url = `/api/scanner?target=${encodeURIComponent(query)}&type=${scanType}`; break;
         case 'headers': url = `/api/scanner?target=${encodeURIComponent(query)}&type=headers`; break;
         case 'ssl': url = `/api/scanner?target=${encodeURIComponent(query)}&type=ssl`; break;
         case 'subdomains': url = `/api/scanner?target=${encodeURIComponent(query)}&type=subdomains`; break;
@@ -339,7 +371,24 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
       }
     } catch { setError('Network error'); }
     finally { setLoading(false); }
-  }, [query, activeTab, scanType, loading, sweepCidr]);
+  }, [query, activeTab, loading, sweepCidr]);
+
+  // Save the current result (a sweep or a single lookup) as a file the reader keeps.
+  const exportResults = useCallback((format: 'json' | 'txt') => {
+    const payload = sweepResult ?? results;
+    if (!payload) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const slug = (query || activeTab).replace(/[^a-z0-9._-]+/gi, '_').slice(0, 40);
+    const base = `osiris-${activeTab}-${slug}-${stamp}`;
+    const [body, type, ext] = format === 'json'
+      ? [JSON.stringify({ tool: activeTab, query, exported_at: new Date().toISOString(), results: payload }, null, 2), 'application/json', 'json']
+      : [resultsToText(activeTab, query, payload), 'text/plain', 'txt'];
+    const url = URL.createObjectURL(new Blob([body], { type }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `${base}.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [sweepResult, results, query, activeTab]);
 
   const currentTab = TABS.find(t => t.id === activeTab);
 
@@ -394,14 +443,6 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
     </div>
   );
 
-  const PortRow = ({ port, state, service, version }: { port: number; state: string; service?: string; version?: string }) => (
-    <div className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--hover-accent)] transition-colors">
-      <span className="text-[10px] font-mono font-bold text-[var(--cyan-primary)] w-[60px]">{port}</span>
-      <StatusBadge ok={state === 'open'} label={state.toUpperCase()} />
-      <span className="text-[11px] font-mono text-[var(--text-secondary)] flex-1">{service || 'unknown'}</span>
-      {version && <span className="text-[10px] font-mono text-[var(--text-muted)]">{version}</span>}
-    </div>
-  );
 
   const renderStructuredResults = () => {
     // The daily brief is self-loading and needs no query, so it renders
@@ -416,31 +457,6 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
     }
     if (!results) return null;
     const r = results;
-
-    // ── PORT SCAN ──
-    if (activeTab === 'scanner') {
-      const ports = r.ports || r.open_ports || r.results || [];
-      const host = r.host || r.target || query;
-      return (
-        <div>
-          <SectionHeader title="HOST INFO" icon={Server} color="#00E5FF" />
-          <ResultRow label="Target" value={host} color="#00E5FF" />
-          <ResultRow label="Scan Type" value={r.scan_type || scanType} />
-          <ResultRow label="Duration" value={r.duration || r.scan_time} />
-          {Array.isArray(ports) && ports.length > 0 && (
-            <>
-              <SectionHeader title={`OPEN PORTS (${ports.length})`} icon={Wifi} color="#00E676" />
-              <div className="space-y-0.5">
-                {ports.map((p: any, i: number) => (
-                  <PortRow key={i} port={p.port || p} state={p.state || 'open'} service={p.service || p.name} version={p.version} />
-                ))}
-              </div>
-            </>
-          )}
-          {(!Array.isArray(ports) || ports.length === 0) && renderFallback()}
-        </div>
-      );
-    }
 
     // ── VULN SCAN ──
     if (activeTab === 'vuln') {
@@ -1281,14 +1297,9 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
         </div>
         )}
 
-        {/* Secondary Controls */}
-        {activeTab === 'scanner' && (
-          <select value={scanType} onChange={e => setScanType(e.target.value)}
-            className="bg-[var(--bg-primary)]/60 border border-[var(--border-primary)] rounded-lg px-2 py-1.5 text-[11px] font-mono text-[var(--text-muted)] outline-none w-full">
-            <option value="quick">QUICK SCAN</option><option value="deep">DEEP SCAN</option><option value="ports">TOP 1000 PORTS</option>
-          </select>
-        )}
-        {activeTab === 'sweep' && (
+        {/* Secondary Controls — the first scanner sweeps like GLOBAL SWEEP, so
+            both carry the subnet-mask control. */}
+        {(activeTab === 'sweep' || activeTab === 'scanner') && (
           <div className="flex items-center justify-between bg-[var(--bg-primary)]/60 border border-[var(--border-primary)] rounded-lg p-1">
             <span className="text-[10px] font-mono text-[var(--text-muted)] pl-2">SUBNET MASK:</span>
             <div className="flex items-center gap-0.5">
@@ -1311,6 +1322,21 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
         </div>
       )}
 
+      {/* Export — save the current scan result as a file. */}
+      {!loading && (results || sweepResult) && (
+        <div className="flex items-center gap-1.5">
+          <FileText className="w-3 h-3 text-[var(--text-muted)]" />
+          <span className="text-[9px] font-mono tracking-[0.18em] text-[var(--text-muted)] mr-auto">EXPORT</span>
+          {(['json', 'txt'] as const).map(fmt => (
+            <button key={fmt} onClick={() => exportResults(fmt)}
+              className="px-2.5 py-1 rounded-md text-[10px] font-mono font-bold tracking-wider border transition-all hover:bg-[var(--hover-accent)]"
+              style={{ borderColor: `${currentTab?.color ?? '#00E5FF'}40`, color: currentTab?.color ?? '#00E5FF' }}
+              title={`Download results as .${fmt}`}
+            >.{fmt.toUpperCase()}</button>
+          ))}
+        </div>
+      )}
+
       {/* Sweep Progress */}
       {sweepProgress && loading && (
         <div className="p-3 rounded-lg border border-[#FF3D3D]/30 bg-[#FF3D3D]/5">
@@ -1325,7 +1351,7 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
       )}
 
       {/* Sweep Results */}
-      {sweepResult && !loading && activeTab === 'sweep' && (
+      {sweepResult && !loading && (activeTab === 'sweep' || activeTab === 'scanner') && (
         <div className="bg-[var(--bg-primary)]/40 border border-[var(--border-primary)] rounded-lg overflow-hidden max-h-[55vh] overflow-y-auto styled-scrollbar">
           {/* Summary */}
           <div className="p-3 border-b border-[#2A2A28]">

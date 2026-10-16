@@ -13,6 +13,7 @@ import { FIND_LAYERS, LAYERS, PANELS, SOURCES, find, frame, loaded, scan, type B
 import { countWords, describeFrame, describeWatch, forModel, type FrameAnalysis, type WatchSummary } from '../../vision/analysis';
 import { sourceOf, type VisionCamera } from '../../vision/source';
 import { haversine } from '../../geo';
+import { RECON_GEOLOCATABLE, RECON_LABEL, RECON_TOOLS, reconFields, reconRequest, reconToolId } from './recon';
 
 export interface HighlightPoint { lat: number; lng: number; label: string }
 export interface Highlight {
@@ -377,6 +378,57 @@ export async function runCall(call: Call, site: Site, signal?: AbortSignal): Pro
       if (!projection && !style) return fail('map_view', 'Give projection ("globe" or "flat") or style ("dark" or "satellite")');
       site.setView({ projection, style });
       return ok('map_view', [projection ? (projection === 'globe' ? 'globe' : 'flat map') : '', style ? `${style} basemap` : ''].filter(Boolean).join(', '));
+    }
+
+    case 'recon': {
+      const id = reconToolId(str(a.tool ?? a.name ?? a.type, 40));
+      if (!id) return fail('recon', `Unknown recon tool "${str(a.tool ?? a.name)}". Tools: ${RECON_TOOLS.join(', ')}`);
+      const target = str(a.target ?? a.query ?? a.ip ?? a.domain ?? a.address ?? a.number ?? a.user ?? a.email ?? a.host, 200);
+
+      // self_track: the reader's own public-IP location, via /api/geo.
+      if (id === 'self_track') {
+        let geo: Record<string, unknown>;
+        try { geo = await fetch('/api/geo', { signal }).then(r => r.json()); }
+        catch { return fail('recon', 'Could not reach the geolocation service'); }
+        const lat = numIn(geo.lat, -90, 90), lng = numIn(geo.lon ?? geo.lng, -180, 180);
+        if (geo.status !== 'success' || lat === null || lng === null) return fail('recon', 'Could not locate your connection');
+        const label = [str(geo.city), str(geo.country)].filter(Boolean).join(', ') || 'Your connection';
+        site.flyTo(lat, lng, 9);
+        site.highlight({ points: [{ lat, lng, label }], area: null });
+        return ok('recon', `Self track: ${label} (${lat.toFixed(2)}, ${lng.toFixed(2)})${geo.isp ? ` · ${str(geo.isp)}` : ''}`,
+          { tool: 'self_track', ...geo },
+          { kind: 'show', title: `Self track · ${label}`, items: [{ label, detail: [str(geo.isp), str(geo.as)].filter(Boolean).join(' · ') || undefined, lat, lng }, ...reconFields(geo).slice(0, 6)] });
+      }
+
+      if (!target) return fail('recon', `The ${RECON_LABEL[id]} lookup needs a target`);
+      const req = reconRequest(id, target);
+      if (!req) return fail('recon', `The ${RECON_LABEL[id]} lookup is not available here`);
+      let json: Record<string, unknown>;
+      try {
+        const res = await fetch(req.url, req.external ? { cache: 'no-store', signal } : { signal });
+        json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (json && typeof json.error === 'string') return fail('recon', `${RECON_LABEL[id]}: ${str(json.error)}`);
+        if (!res.ok && res.status >= 500) return fail('recon', `${RECON_LABEL[id]}: lookup failed (HTTP ${res.status})`);
+      } catch { return fail('recon', `${RECON_LABEL[id]} lookup failed`); }
+
+      // Pin it where we can: the result's own coordinates, else geolocate the IP/host.
+      let at: Point | null = point({ lat: json.lat, lng: json.lng ?? json.lon });
+      if (!at && RECON_GEOLOCATABLE.includes(id)) {
+        try {
+          const g = await fetch(`/api/osint/ip?ip=${encodeURIComponent(target)}`, { signal }).then(r => r.json());
+          const geo = g && typeof g === 'object' ? ((g as Record<string, unknown>).geo as Record<string, unknown> | undefined) : undefined;
+          if (geo) at = point({ lat: geo.lat, lng: geo.lon ?? geo.lng });
+        } catch { /* best effort; a lookup is still useful without a pin */ }
+      }
+      if (at) { site.flyTo(at.lat, at.lng, id === 'shodan' ? 10 : 6); site.highlight({ points: [{ lat: at.lat, lng: at.lng, label: target }], area: null }); }
+
+      const fields = reconFields(json);
+      const head = fields.slice(0, 3).map(f => `${f.label} ${f.detail}`).join(' · ');
+      const summary = `${RECON_LABEL[id]} for ${target}${head ? `: ${head}` : ': no fields returned'}`.slice(0, 300);
+      return ok('recon', summary, { tool: id, target, ...json }, {
+        kind: 'show', title: `${RECON_LABEL[id]} · ${target}`,
+        items: (fields.length ? fields : [{ label: 'result', detail: 'no readable fields' }]).map(f => ({ label: f.label, detail: f.detail, ...(at ?? {}) })),
+      });
     }
 
     case 'forecast': {

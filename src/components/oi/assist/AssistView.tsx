@@ -15,7 +15,7 @@ import { createElement, useEffect, useRef, useState, type ReactNode } from 'reac
 import { motion } from 'framer-motion';
 import {
   ArrowUp, ArrowUpRight, Cctv, Eraser, ExternalLink, Globe2, KeyRound, Layers, LayoutDashboard, List, Loader2, LocateFixed, MapPin, Mic, MousePointerClick, Navigation, Orbit, PanelRight,
-  RotateCcw, ScanSearch, Search, Square, TrendingUp, Volume2, VolumeX, X, type LucideProps,
+  Radar, RotateCcw, ScanSearch, Search, Square, TrendingUp, Volume2, VolumeX, X, type LucideProps,
 } from 'lucide-react';
 import type { OiClient } from '@/lib/oi/client';
 import type { ActionView, AssistClient, Entry } from '@/lib/oi/assist/client';
@@ -28,7 +28,7 @@ import { canSpeak, useDictation } from './voice';
 
 const TOOL_ICON: Record<ToolName, typeof Navigation> = {
   go_to: Navigation, layers: Layers, find: Search, scan: ScanSearch, camera: Cctv, highlight: MapPin, show: List, markets: TrendingUp,
-  open: PanelRight, map_view: Globe2, forecast: Orbit, workspace: LayoutDashboard, select: MousePointerClick, clear: Eraser,
+  open: PanelRight, map_view: Globe2, recon: Radar, forecast: Orbit, workspace: LayoutDashboard, select: MousePointerClick, clear: Eraser,
 };
 
 function ToolIcon({ tool, ...rest }: LucideProps & { tool: ToolName }) {
@@ -69,6 +69,7 @@ function describe(a: ActionView): string {
     case 'markets': return `Read ${Array.isArray(a.args.symbols) ? (a.args.symbols as string[]).join(', ') : 'the markets'}`;
     case 'open': return `Open ${g('panel')}`;
     case 'map_view': return `Switch to ${[g('projection'), g('style')].filter(Boolean).join(', ')}`;
+    case 'recon': return g('tool') === 'self_track' ? 'Self track your location' : `Recon ${g('tool')}${g('target') ? ` ${g('target')}` : ''}`;
     case 'forecast': return `Forecast: ${g('question')}`;
     case 'workspace': return a.args.open === false ? 'Close the workspace' : `Open the workspace${g('view') ? ` on the ${g('view')}` : ''}`;
     case 'select': return `Open ${g('name')}`;

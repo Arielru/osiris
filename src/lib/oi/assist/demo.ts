@@ -60,6 +60,15 @@ export function demoAssist(prompt: string): string {
   const place = placeIn(text);
   const near = place ? { near: place } : {};
 
+  // Recon: the reader's own location, or an OSINT lookup from the Recon panel.
+  if (/\b(self[\s-]?track|track me|locate me|where am i|my (?:ip|location))\b/.test(t)) {
+    return json('Tracking your connection now.', [{ tool: 'recon', args: { tool: 'self_track' } }], false);
+  }
+  const recon = t.match(/\b(shodan|whois|dns|certs?|ssl|subdomains?|headers?|bgp|mac|phone|username|github|threats?|leaks?|breach|crypto|wallet|vuln)\b(?:\s+(?:lookup|recon|for|on|of))?\s+(\S+)/);
+  if (recon) {
+    return json(`Running a ${recon[1]} lookup on ${recon[2].replace(/[?!.,]+$/, '')}.`, [{ tool: 'recon', args: { tool: recon[1], target: recon[2].replace(/[?!.,]+$/, '') } }], false);
+  }
+
   if (mode === 'forecast' || /\b(forecast|predict|odds|chance of|probability)\b/.test(t)) {
     const q = text.replace(/^(forecast|predict)[:\s-]*/i, '').trim();
     return json('Starting a prediction. OI casts the actors who decide it and plays them out in parallel worlds; follow it in the Forecast tab.', [{ tool: 'forecast', args: { question: q.endsWith('?') ? q : `${q}?`, depth: 'quick' } }]);
