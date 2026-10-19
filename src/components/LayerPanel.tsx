@@ -4,8 +4,8 @@ import { memo, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plane, Satellite, Sun, AlertTriangle, Camera,
-  CloudLightning, Ship, Network, Database, Ghost,
-  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal
+  CloudLightning, CloudSun, Ship, Network, Database, Ghost,
+  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal, Bus
 } from 'lucide-react';
 import StyleStudio from './StyleStudio';
 import { TERRAIN_MIN_ZOOM, type TerrainStatus } from '@/lib/map-terrain';
@@ -26,6 +26,8 @@ interface LayerPanelProps {
   on3DModeSelected?: () => void;
   /** False while the splash is up; the rail slides in when it turns true. */
   revealed?: boolean;
+  /** A layer's live state in a line, shown under its name in place of its description. */
+  liveStatus?: Record<string, string>;
 }
 
 interface LayerDef {
@@ -51,11 +53,10 @@ interface LayerGroupDef {
 
 const LAYER_GROUPS: LayerGroupDef[] = [
   {
-    label: 'SDK',
-    fullLabel: 'OSIRIS SDK',
-    icon: Network,
+    label: 'WEATHER',
+    fullLabel: 'WEATHER',
+    icon: CloudSun,
     layers: [
-      { key: 'sdk_sea', label: 'Maritime Lines', dataKey: 'sdk_entities' },
       { key: 'live_clouds', label: 'Live Clouds', description: 'NOAA satellites · lit in 3D · hourly', dataKey: '' },
       { key: 'wind', label: 'Wind', description: 'NOAA GFS · surface wind · 6-hourly', dataKey: '' },
       { key: 'wind_controls', label: 'Time Controls', description: '3 days back · 5 ahead', dataKey: '', parent: 'wind' },
@@ -80,6 +81,15 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     icon: Ship,
     layers: [
       { key: 'maritime', label: 'Maritime / Naval', dataKey: 'maritime_ships,maritime_ports,maritime_chokepoints' },
+      { key: 'sdk_sea', label: 'Maritime Lines', dataKey: 'sdk_entities' },
+    ],
+  },
+  {
+    label: 'TRANSIT',
+    fullLabel: 'GROUND TRANSIT',
+    icon: Bus,
+    layers: [
+      { key: 'transit', label: 'Live Buses & Transit', description: 'Operator GPS feeds · every 20 s', dataKey: '' },
     ],
   },
   {
@@ -205,7 +215,7 @@ function SubLayerStem() {
   );
 }
 
-function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'core', setTheme, capabilities = {}, terrainStatus = 'idle', onTerrainRetry, onTerrainFocus, on3DModeSelected, revealed = true }: LayerPanelProps) {
+function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'core', setTheme, capabilities = {}, terrainStatus = 'idle', onTerrainRetry, onTerrainFocus, on3DModeSelected, revealed = true, liveStatus }: LayerPanelProps) {
   const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
   /**
    * A pinned group stays open when the pointer leaves. Hover-only flyouts are
@@ -298,7 +308,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                     <ToggleSwitch active={!!isLayerActive} />
                     <span className={`text-[11px] font-mono uppercase tracking-wider flex-1 transition-colors ${isLayerActive ? 'text-white/80' : 'text-white/40'}`}>
                       {layer.label}
-                      {layer.description && <span className="block mt-0.5 text-[9px] normal-case tracking-normal text-white/35">{layer.description}</span>}
+                      {(liveStatus?.[layer.key] ?? layer.description) && <span className={`block mt-0.5 text-[9px] normal-case tracking-normal ${liveStatus?.[layer.key] ? 'text-white/55' : 'text-white/35'}`}>{liveStatus?.[layer.key] ?? layer.description}</span>}
                     </span>
                     {count !== null && (
                       <span className="text-[10px] font-mono tabular-nums text-white/25">
@@ -489,7 +499,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                             <ToggleSwitch active={!!isLayerActive} />
                             <span className={`text-[11px] font-mono uppercase tracking-wider flex-1 transition-colors duration-200 ${isLayerActive ? 'text-white/70' : 'text-white/35'}`}>
                               {layer.label}
-                              {layer.description && <span className="block mt-0.5 text-[9px] normal-case tracking-normal text-white/35">{layer.description}</span>}
+                              {(liveStatus?.[layer.key] ?? layer.description) && <span className={`block mt-0.5 text-[9px] normal-case tracking-normal ${liveStatus?.[layer.key] ? 'text-white/55' : 'text-white/35'}`}>{liveStatus?.[layer.key] ?? layer.description}</span>}
                             </span>
                             {count !== null && (
                               <span className={`text-[10px] font-mono tabular-nums transition-colors ${isLayerActive ? 'text-white/45' : 'text-white/20'}`}>

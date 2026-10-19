@@ -181,18 +181,18 @@ export const API_GROUPS: ApiGroup[] = [
       {
         path: '/api/conflicts',
         method: 'GET',
-        summary: 'Active conflict zones joined with live incident reporting.',
+        summary: 'A curated list of conflict zones, each with the recent world-news headlines that mention it.',
         returns: [
           'zones',
           'activeWarzones',
-          'liveEvents',
           'totalZones',
-          'totalLiveEvents',
+          'totalHeadlines',
+          'zoneSource',
           'sources',
           'refreshInterval',
           'timestamp',
         ],
-        notes: '`refreshInterval` is the server’s recommended client poll interval in milliseconds — honour it rather than hard-coding your own.',
+        notes: 'Zones and their severity are kept by hand (`zoneSource: "curated"`), so `activeWarzones` counts ratings, not live events. Each zone’s `headlines` are news items that name it; they carry no coordinates. `refreshInterval` is the server’s recommended client poll interval in seconds — honour it rather than hard-coding your own.',
       },
       {
         path: '/api/frontlines',
@@ -259,7 +259,8 @@ export const API_GROUPS: ApiGroup[] = [
         path: '/api/scm-suppliers',
         method: 'GET',
         summary: 'Supply-chain suppliers with criticality flags.',
-        returns: ['suppliers', 'total', 'critical_count', 'timestamp'],
+        returns: ['suppliers', 'total', 'critical_count', 'degraded_signals', 'timestamp'],
+        notes: 'Risk comes from earthquakes (USGS), fire hotspots (FIRMS), GDACS disaster alerts and GDELT-reported conflict near each site. `degraded_signals` names any source that did not answer; a supplier at NORMAL is clear only for the sources that ran.',
       },
     ],
   },
@@ -316,6 +317,18 @@ export const API_GROUPS: ApiGroup[] = [
         summary: 'Ports, chokepoints, and vessel positions.',
         returns: ['ports', 'chokepoints', 'ships', 'total_ports', 'total_chokepoints', 'total_ships', 'timestamp'],
         env: ['AIS_API_KEY'],
+      },
+      {
+        path: '/api/transit',
+        method: 'GET',
+        summary: 'Live buses, trams, metros, trains and ferries, from operators’ own GTFS-Realtime feeds. Keyless; free keys add more cities.',
+        params: [
+          { name: 'bbox', desc: 'west,south,east,north in degrees: every vehicle in the box.', example: '-71.2,42.25,-70.95,42.45' },
+          { name: 'coverage', desc: 'Set to 1 for where there are feeds instead: one entry per feed, with its area and fleet size, and the operators a free key would add.', example: '1' },
+        ],
+        returns: ['vehicles', 'feeds', 'skippedFeeds', 'truncated', 'total', 'timestamp'],
+        env: ['TRANSIT_WMATA_KEY', 'TRANSIT_511_KEY', 'TRANSIT_TRIMET_KEY', 'TRANSIT_TRANSLINK_KEY', 'TRANSIT_STM_KEY', 'TRANSIT_NTA_KEY', 'TRANSIT_TRAFIKLAB_KEY', 'TRANSIT_TFNSW_KEY', 'TRANSIT_METLINK_KEY', 'TRANSIT_AT_KEY'],
+        notes: 'Each vehicle carries its feed id `f`, `lat`, `lng`, and where known `route` (the feed’s route id), `name` (the route as riders know it, from the operator’s timetable), `mode` (bus, tram, metro, rail, ferry, cable), `label`, `trip`, bearing `b` (degrees), speed `s` (m/s), position time `t` (epoch seconds) and occupancy `occ`. Feeds are read only for the area asked about and shared between callers for 20 s (30 s for Great Britain’s nationwide file); up to 40 feeds are read per box, nearest its centre first. Positions older than 15 minutes are left out. Every variable listed is optional and adds one operator.',
       },
       {
         path: '/api/arcgis',
@@ -738,7 +751,7 @@ export const API_GROUPS: ApiGroup[] = [
         env: ['SDK_INGEST_KEY'],
         requiresAuth: true,
         notes:
-          'Each entity needs `id`, `position.lat`, and `position.lng`; everything else is defaulted. Stored ids are namespaced to `ext-{source}-{id}`, so two platforms can push the same id safely. Fails closed: 503 when `SDK_INGEST_KEY` is unset, 401 on key mismatch, 400 on a malformed payload.',
+          'Each entity needs `id`, `position.lat`, and `position.lng`; everything else is defaulted. Stored ids are namespaced to `ext-{source}-{id}`, so two platforms can push the same id safely. The batch is checked whole before anything is stored, so `accepted` is exactly what reached the map. Fails closed: 503 when `SDK_INGEST_KEY` is unset, 401 on key mismatch, 400 on a malformed payload or invalid JSON, 413 over 2 MB. The store holds up to 20,000 entities; past that, new ids are refused and updates to held ones still land.',
         bodyExample: `{
   "source": "lattice",
   "apiKey": "$SDK_INGEST_KEY",
@@ -768,7 +781,7 @@ export const API_GROUPS: ApiGroup[] = [
         summary: 'Server-Sent Events stream of normalised entities as they arrive.',
         returns: ['…SSE event stream'],
         notes:
-          'Opens with a `status` event carrying `connected`, `entityCount`, `feedCount`, `latticeStatus`, and `lastUpdate`. Consume with `EventSource`, not `fetch`.',
+          'Opens with a `status` event carrying `connected`, `entityCount`, `feedCount`, `latticeStatus`, and `lastUpdate`. Each `entity_update` carries up to 500 entities in `payload`, with `total` (how many are held) and `truncated` (true when `payload` is not all of them). Consume with `EventSource`, not `fetch`.',
       },
     ],
   },

@@ -43,6 +43,14 @@ export interface RouteResult {
   descent?: number;
 }
 
+/** What a route was planned with, besides its ends: the travel mode is on the route itself. */
+export interface TripPlan {
+  /** Intermediate stops, in order. */
+  stops: { lat: number; lng: number }[];
+  /** Any of 'tolls', 'highways', 'ferries'. */
+  avoid: string[];
+}
+
 export interface LiveLocation {
   lat: number;
   lng: number;
@@ -84,8 +92,11 @@ interface DirectionsBarProps {
   /** Selected step segment, for highlighting the leg on the map. */
   onActiveSegment?: (seg: [number, number][] | null) => void;
   onFollowChange?: (follow: boolean) => void;
-  /** Hand the chosen route to the parent to drive live navigation. */
-  onStartNavigation?: (route: RouteResult, destinationLabel: string) => void;
+  /**
+   * Hand the chosen route to the parent to drive live navigation, with the
+   * plan behind it, so a re-plan on the way keeps the same stops and options.
+   */
+  onStartNavigation?: (route: RouteResult, destinationLabel: string, plan: TripPlan) => void;
   /** A destination to open with, handed over from Search ("Directions to here"). */
   initialTo?: Place | null;
 }
@@ -899,7 +910,10 @@ export default function DirectionsBar({ onRoute, onLocate, onClose, center = nul
               </div>
 
               {onStartNavigation && (
-                <button onClick={() => onStartNavigation(route, to?.label || 'your destination')} className="tool-btn-primary w-full mt-3">
+                <button onClick={() => onStartNavigation(route, to?.label || 'your destination', {
+                  stops: stops().map(({ lat, lng }) => ({ lat, lng })),
+                  avoid: Object.entries(avoid).filter(([, on]) => on).map(([k]) => k),
+                })} className="tool-btn-primary w-full mt-3">
                   <Play className="w-4 h-4" fill="currentColor" /> Start navigation
                 </button>
               )}

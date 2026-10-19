@@ -55,7 +55,7 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 | **Weather** | Severe Events | NASA EONET |
 | **Space** | Solar Weather, Satellites | NOAA SWPC, N2YO |
 | **Cyber** | CVE Threats, Vulnerability Scanning | NVD, Custom Scanner |
-| **Conflict** | 13 Active Zones | Static OSINT Intel |
+| **Conflict** | 15 Curated Zones + the headlines that name them | Hand-kept zone list, BBC / Al Jazeera / NYT world feeds |
 | **Crypto** | BTC + ETH Wallet Tracing, OFAC SDN Match | blockstream.info, Blockscout, OpenSanctions |
 | **Sanctions** | Person / Org / Vessel SDN Search | OpenSanctions (US OFAC SDN mirror) |
 | **Telegram OSINT** | Geoparsed Posts from Public Channels | `t.me/s/<channel>` web preview |
@@ -150,10 +150,11 @@ Run `npm test` for offline checks or `RUN_LIVE_TESTS=1 npx vitest run src/app/ap
 - Data sourced from [OpenSanctions](https://www.opensanctions.org) (CC-BY 4.0) — keyless, ~7 MB cached in-memory for 24h
 
 ### Conflict Zone Monitoring
-- **13 active conflict/tension zones** with severity-coded warning markers
+- **15 conflict/tension zones** with severity-coded warning markers. The zones and their severity are a list kept by hand, not a live measurement, and each zone's popup says so
 - Active Wars: Ukraine, Gaza, Sudan, Myanmar, DRC, Yemen
 - High Tension: Syria, Lebanon, Sahel, Somalia, Red Sea
-- Elevated: Taiwan Strait, Korean DMZ
+- Elevated: Taiwan Strait, Korean DMZ, Iraq, Ethiopia
+- Each zone lists the current world-news headlines that mention it, with their outlet and link. Headlines are not plotted as points: a story names a place, not where something happened. For geocoded events, turn on the GDELT Events layer
 
 ### Performance Optimized
 - **75% reduction in edge requests** vs initial release

@@ -34,11 +34,12 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  images: {
-    remotePatterns: [
-      { protocol: 'https', hostname: '**' },
-    ],
-  },
+  // No "X-Powered-By: Next.js": it tells a scanner which advisories to try.
+  poweredByHeader: false,
+  /* No images.remotePatterns: nothing renders next/image, and the old
+     `hostname: '**'` let anyone use /_next/image to fetch and resize pictures
+     from any host through this server. A remote image source added later
+     should be listed by exact host. */
   async headers() {
     return [
       /* The worker path carries the MapLibre version, so a given URL never
@@ -67,6 +68,12 @@ const nextConfig: NextConfig = {
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'X-XSS-Protection', value: '1; mode=block' },
+          // Other sites learn the origin a visitor came from, not the view they were on.
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          /* Location (directions, "near me") and the microphone (OI voice)
+             are used by OSIRIS itself and by nothing it embeds; the rest it
+             never asks for, so no page or embed can. */
+          { key: 'Permissions-Policy', value: 'geolocation=(self), microphone=(self), camera=(), payment=(), usb=(), display-capture=()' },
         ],
       },
     ];

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { gatherContext, marketLine, scoreNews, selectContext, terms, type RawNews, type Sources } from './context';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
@@ -68,6 +68,12 @@ describe('marketLine', () => {
 });
 
 describe('gatherContext', () => {
+  // gatherContext reads the clock itself, and the fixture's stories are dated
+  // from NOW: without this the test started failing three days after NOW,
+  // once every story had aged out of the 72-hour window.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(NOW); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it('carries on without a source that fails', async () => {
     const sources: Sources = {
       news: async () => NEWS,

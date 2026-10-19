@@ -25,6 +25,7 @@ import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreview
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
 import { applyMapProjection } from '@/lib/map-projection';
+import { attachTransit, type TransitStatus } from '@/lib/transit-layer';
 
 /** The catalogue fields the satellite layer and its popup actually read. */
 interface SatelliteRow {
@@ -38,6 +39,18 @@ interface SatelliteRow {
   noradId?: string;
 }
 import 'maplibre-gl/dist/maplibre-gl.css';
+
+/**
+ * Layers with their own click handlers. The satellite pick and the transit
+ * vehicles defer to these, and to nothing else: the basemap, the night shade
+ * and other fills are not click targets.
+ */
+const CLICKABLE_LAYERS: ReadonlySet<string> = new Set(['conflict-icons','cctv-dots','eq-circles','fires-heat',
+  'gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots',
+  'balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots',
+  'sdk-sea','sdk-air','sdk-intel','malware-dots','cyber-heads','gdelt-events-dots',
+  'cf-outage-dots','cf-attack-dots','flight-dots','military-dots','jet-dots','private-dots','alert-pin-dots',
+  'transit-coverage-dots']);
 
 interface OsirisMapProps {
   data: any;
@@ -79,6 +92,8 @@ interface OsirisMapProps {
   drawCommand?: { action: DrawAction["type"]; seq: number } | null;
   onDrawComplete?: (result: DrawResult) => void;
   onMapCenter?: (coords: { lat: number; lng: number; bounds?: { west: number; south: number; east: number; north: number } }) => void;
+  /** What the Live Transit layer can see, for the layer panel; null while it is off. */
+  onTransitStatus?: (status: TransitStatus | null) => void;
   /** Active turn-by-turn route drawn as a line with origin/destination pins. */
   route?: {
     geometry: { type: 'LineString'; coordinates: [number, number][] };
@@ -186,7 +201,7 @@ interface AlertPinFeature {
   properties: AlertPinProps;
 }
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, onLayerOff, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, route = null, userLocation = null, followUser = false, onFollowInterrupt, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
+function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, onLayerOff, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, onTransitStatus, route = null, userLocation = null, followUser = false, onFollowInterrupt, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -996,7 +1011,9 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     // ── XSS PROTECTION HELPERS ──
     const htmlEsc = (s: any): string => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     const idSafe = (s: any): string => String(s ?? '').replace(/[^a-zA-Z0-9_\.\-]/g, '');
-    const urlSafe = (s: any): string => { const u = String(s ?? ''); return /^https?:\/\//i.test(u) ? u : '#'; };
+    // An http(s) link, escaped and ready for an href or src attribute: a quote
+    // in a feed's URL would otherwise close the attribute and open a handler.
+    const urlSafe = (s: any): string => { const u = String(s ?? ''); return /^https?:\/\//i.test(u) ? htmlEsc(u) : '#'; };
 
     const formatTime = (iso: string | null) => {
       if (!iso) return '—';
@@ -1151,13 +1168,6 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     });
 
     // ── Satellites (SatNOGS powered) ──
-    // Layers with their own click handlers. The satellite pick defers to
-    // these, and to nothing else — the basemap is not a click target.
-    const CLICKABLE_LAYERS = new Set(['conflict-icons','cctv-dots','eq-circles','fires-heat',
-      'gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots',
-      'balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots',
-      'sdk-sea','sdk-air','sdk-intel','malware-dots','cyber-heads','gdelt-events-dots',
-      'cf-outage-dots','cf-attack-dots','flight-dots','military-dots','jet-dots','private-dots','alert-pin-dots']);
 
     // Satellites are picked on the GPU: the pick pass runs the same vertex
     // shader as the visible one, so the target is always exactly where the
@@ -1409,14 +1419,20 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       const p = e.features[0].properties as any;
       const coords = (e.features[0].geometry as any).coordinates;
       const color = p.severity === 'war' ? '#FF1744' : p.severity === 'high' ? '#FF9500' : '#FFD500';
+      let headlines: { title?: string; url?: string; source?: string }[] = [];
+      try { headlines = JSON.parse(p.headlines || '[]'); } catch { /* none */ }
+      const count = Number(p.headlineCount) || 0;
+      const headlineList = headlines.map(h => `<a href="${urlSafe(h.url)}" target="_blank" rel="noopener noreferrer" style="display:block;color:#C9C5BC;text-decoration:none;font-size:10px;line-height:1.35;margin-top:5px;">${htmlEsc(h.title)} <span style="color:#5C5A54;">· ${htmlEsc(h.source)}</span></a>`).join('');
       popup(coords, `<div style="${pStyle}border:1px solid ${color}40;">
-        <div style="color:${color};font-size:12px;font-weight:700;margin-bottom:6px;">⚠️ ${htmlEsc(p.label || 'WARNING EVENT')}</div>
-        <div style="font-size:10px;color:#E8E6E0;margin-bottom:8px;line-height:1.4;">${htmlEsc(p.description || 'Global event detected at this location.')}</div>
+        <div style="color:${color};font-size:12px;font-weight:700;margin-bottom:6px;">⚠️ ${htmlEsc(p.label || 'CONFLICT ZONE')}</div>
+        <div style="font-size:10px;color:#E8E6E0;margin-bottom:8px;line-height:1.4;">${htmlEsc(p.description || '')}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:9px;margin-bottom:8px;">
           <div><span style="color:#5C5A54;">SEVERITY</span><br/><span style="color:${color};">${(p.severity||'unknown').toUpperCase()}</span></div>
-          <div><span style="color:#5C5A54;">COORDS</span><br/><span style="color:#E8E6E0;">${coords[1].toFixed(3)}°, ${coords[0].toFixed(3)}°</span></div>
+          <div><span style="color:#5C5A54;">IN THE NEWS</span><br/><span style="color:#E8E6E0;">${count} headline${count === 1 ? '' : 's'}</span></div>
         </div>
-        ${p.sourceUrl ? `<a href="${urlSafe(p.sourceUrl)}" target="_blank" style="${linkStyle}flex:1;text-align:center;color:${color};border:1px solid ${color}40;background:${color}15;display:inline-block;width:100%;box-sizing:border-box;margin-top:4px;">[ OPEN SOURCE ↗ ]</a>` : ''}
+        ${headlineList ? `<div style="padding-top:6px;border-top:1px solid rgba(255,255,255,0.06);margin-bottom:8px;"><div style="font-size:8.5px;letter-spacing:0.14em;color:#5C5A54;">HEADLINES THAT MENTION IT</div>${headlineList}</div>` : ''}
+        <div style="font-size:8.5px;color:#5C5A54;line-height:1.4;margin-bottom:6px;">The zone and its severity come from a list OSIRIS keeps by hand, not from a live measurement.</div>
+        ${p.sourceUrl ? `<a href="${urlSafe(p.sourceUrl)}" target="_blank" rel="noopener noreferrer" style="${linkStyle}flex:1;text-align:center;color:${color};border:1px solid ${color}40;background:${color}15;display:inline-block;width:100%;box-sizing:border-box;margin-top:4px;">[ OPEN SOURCE ↗ ]</a>` : ''}
       </div>`);
     });
 
@@ -1744,16 +1760,16 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       /* Footage plays in place where Telegram serves the file; a video it
          only shows in the app gets its preview and a way through to it. */
       const media = video !== '#'
-        ? `<video src="${htmlEsc(video)}"${thumb !== '#' ? ` poster="${htmlEsc(thumb)}"` : ''} controls playsinline preload="none" style="display:block;width:100%;max-height:180px;margin-top:10px;border-radius:6px;background:#000;"></video>`
+        ? `<video src="${video}"${thumb !== '#' ? ` poster="${thumb}"` : ''} controls playsinline preload="none" style="display:block;width:100%;max-height:180px;margin-top:10px;border-radius:6px;background:#000;"></video>`
         : thumb !== '#'
-          ? `<a href="${htmlEsc(link)}" target="_blank" rel="noopener noreferrer" style="display:block;position:relative;margin-top:10px;">
-              <img src="${htmlEsc(thumb)}" referrerpolicy="no-referrer" alt="" style="display:block;width:100%;max-height:180px;object-fit:cover;border-radius:6px;">
+          ? `<a href="${link}" target="_blank" rel="noopener noreferrer" style="display:block;position:relative;margin-top:10px;">
+              <img src="${thumb}" referrerpolicy="no-referrer" alt="" style="display:block;width:100%;max-height:180px;object-fit:cover;border-radius:6px;">
               ${p.media_kind === 'video' ? `<span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.75);color:#fff;font-size:9px;letter-spacing:0.1em;padding:4px 10px;border-radius:12px;">▶ WATCH ON TELEGRAM${p.duration ? ` · ${htmlEsc(p.duration)}` : ''}</span>` : ''}
             </a>`
           : '';
       const more = rest.slice(0, 4).map(r => {
         const rc = (ALERT_KINDS[r.kind as AlertKind] ?? ALERT_KINDS.news).color;
-        return `<a href="${htmlEsc(urlSafe(r.link))}" target="_blank" rel="noopener noreferrer" style="display:flex;gap:6px;align-items:baseline;color:#C9C5BC;text-decoration:none;font-size:10px;line-height:1.35;margin-top:5px;">
+        return `<a href="${urlSafe(r.link)}" target="_blank" rel="noopener noreferrer" style="display:flex;gap:6px;align-items:baseline;color:#C9C5BC;text-decoration:none;font-size:10px;line-height:1.35;margin-top:5px;">
           <span style="flex:none;width:6px;height:6px;border-radius:50%;background:${rc};transform:translateY(-1px);"></span>
           <span>${htmlEsc(r.title)} <span style="color:#5C5A54;">· ${htmlEsc(r.source_name)} · ${htmlEsc(timeAgo(r.published))}</span></span>
         </a>`;
@@ -1769,7 +1785,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         <div style="margin-top:6px;font-size:9.5px;color:#8A8880;">${htmlEsc(p.source_name)}${p.lean ? ` · <span style="color:#9B978E;">${htmlEsc(p.lean)}</span>` : ''}</div>
         <div style="margin-top:6px;font-size:9.5px;color:${c};" title="The place the post names, resolved against OpenStreetMap. Town-level: a post names a place, not an exact spot.">📍 ${htmlEsc(p.place_label)}<span style="color:#5C5A54;"> · ${p.precision === 'region' ? 'region' : 'place'} named in the post · © OpenStreetMap</span></div>
         ${media}
-        ${link !== '#' ? `<a href="${htmlEsc(link)}" target="_blank" rel="noopener noreferrer" style="${linkStyle}color:${c};border:1px solid ${c}66;background:${c}1a;">OPEN POST ↗</a>` : ''}
+        ${link !== '#' ? `<a href="${link}" target="_blank" rel="noopener noreferrer" style="${linkStyle}color:${c};border:1px solid ${c}66;background:${c}1a;">OPEN POST ↗</a>` : ''}
         ${more ? `<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);"><div style="font-size:8.5px;letter-spacing:0.14em;color:#5C5A54;">ALSO HERE</div>${more}</div>` : ''}
       </div>`;
     };
@@ -2355,34 +2371,24 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         const conflictData = await res.json();
         if (cancelled) return;
 
-        // Zone anchor markers (war/high/elevated labels)
+        /* One marker per zone. The headlines that mention a zone are listed in
+           its popup, not plotted: a headline names a place, not where on the
+           map something happened. */
         const zoneFeatures = (conflictData.zones || []).map((z: any) => ({
           type: 'Feature' as const,
           geometry: { type: 'Point' as const, coordinates: [z.lng, z.lat] },
-          properties: { 
-            label: z.label, 
-            severity: z.severity, 
-            description: `${z.description}${z.eventCount > 0 ? ` [${z.eventCount} live events detected]` : ''}`,
+          properties: {
+            label: z.label,
+            severity: z.severity,
+            description: z.description,
             sourceUrl: z.sourceUrl,
-            eventCount: z.eventCount,
+            headlineCount: z.headlineCount ?? 0,
+            // Feature properties come back flat, so the list travels as JSON.
+            headlines: JSON.stringify((z.headlines || []).slice(0, 4)),
           },
         }));
 
-        // Individual live conflict events (scatter dots across conflict zones)
-        const eventFeatures = (conflictData.liveEvents || [])
-          .filter((e: any) => e.lat && e.lng)
-          .map((e: any) => ({
-            type: 'Feature' as const,
-            geometry: { type: 'Point' as const, coordinates: [e.lng, e.lat] },
-            properties: { 
-              label: (e.title || 'CONFLICT EVENT').substring(0, 60).toUpperCase(),
-              severity: 'war',
-              description: e.title || 'Live conflict event detected by GDELT.',
-              sourceUrl: e.url || '',
-            },
-          }));
-
-        setGeo('conflict-zones', [...zoneFeatures, ...eventFeatures]);
+        setGeo('conflict-zones', zoneFeatures);
       } catch (e) {
         // Fallback: if API fails, use minimal known zones
         const FALLBACK_ZONES = [
@@ -3368,6 +3374,28 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     lastCmdSeq.current = drawCommand.seq;
     drawApplyRef.current?.({ type: drawCommand.action } as DrawAction);
   }, [drawCommand]);
+
+  // ── LIVE TRANSIT ── see lib/transit-layer: it draws, polls and animates on its own.
+  const onTransitStatusRef = useRef(onTransitStatus);
+  useEffect(() => { onTransitStatusRef.current = onTransitStatus; }, [onTransitStatus]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || !activeLayers.transit) return;
+    const detach = attachTransit(map, {
+      // Through the map's one popup, so opening a vehicle closes any other card.
+      openPopup: (lngLat, html, anchor) => {
+        popupRef.current?.remove();
+        popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: '420px', offset: 14, ...(anchor ? { anchor } : {}) }).setLngLat(lngLat).setHTML(html).addTo(map);
+        return popupRef.current;
+      },
+      onStatus: status => onTransitStatusRef.current?.(status),
+      clickableLayers: CLICKABLE_LAYERS,
+    });
+    return () => {
+      detach();
+      onTransitStatusRef.current?.(null);
+    };
+  }, [mapReady, activeLayers.transit]);
 
   // ── MAP CENTER REPORTING ──
   useEffect(() => {

@@ -38,7 +38,10 @@ interface Settings extends WindStyle {
   /** The box is open, rather than folded to its chip. */
   open: boolean;
 }
-const DEFAULTS: Settings = { ...WIND_STYLE, rate: 3, unit: 'km/h', open: true };
+// Folded to its chip until the visitor opens it.
+const DEFAULTS: Settings = { ...WIND_STYLE, rate: 3, unit: 'km/h', open: false };
+/** Settings saved before the box started folded carry an `open: true` nobody chose; theirs is not kept. */
+const VERSION = 2;
 
 type Frame = Omit<WindField, 'u' | 'v'> & { u: Int16Array; v: Int16Array };
 
@@ -51,7 +54,7 @@ function readSettings(): Settings {
     if (typeof saved?.density === 'number') out.density = saved.density;
     if (RATES.includes(saved?.rate)) out.rate = saved.rate;
     if (saved?.unit in UNITS) out.unit = saved.unit;
-    if (typeof saved?.open === 'boolean') out.open = saved.open;
+    if (saved?.v === VERSION && typeof saved?.open === 'boolean') out.open = saved.open;
   } catch { /* storage blocked or corrupt */ }
   return out;
 }
@@ -120,7 +123,7 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
 
   useEffect(() => {
     overlay.current?.setStyle({ speed: settings.speed, trail: settings.trail, density: settings.density });
-    try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch { /* storage blocked */ }
+    try { localStorage.setItem(STORE, JSON.stringify({ ...settings, v: VERSION })); } catch { /* storage blocked */ }
   }, [settings]);
 
   // Which run, and so which times. A new run lands every six hours.
@@ -277,7 +280,7 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
           <div className="flex items-center gap-2">
             <Choice label="Wind speed unit" value={settings.unit} onChange={unit => update({ unit })}
               options={(Object.keys(UNITS) as Unit[]).map(unit => ({ value: unit, label: unit.toUpperCase() }))} />
-            <ResetButton onClick={() => setSettings(s => ({ ...DEFAULTS, unit: s.unit }))} />
+            <ResetButton onClick={() => setSettings(s => ({ ...DEFAULTS, unit: s.unit, open: s.open }))} />
           </div>
         </>
       )}

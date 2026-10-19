@@ -286,6 +286,7 @@ export const LAYERS: Record<string, string> = {
   jets: 'business jets',
   military: 'military aircraft',
   maritime: 'ships, ports and chokepoints',
+  transit: 'live buses, trams and trains from city transit operators (vehicles show from zoom 5; fly to a city)',
   satellites: 'satellites in orbit',
   cctv: 'live public cameras',
   live_news: 'live news broadcasts placed on the map',

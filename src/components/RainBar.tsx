@@ -117,7 +117,10 @@ interface Settings {
   /** The box is open, rather than folded to its chip. */
   open: boolean;
 }
-const DEFAULTS: Settings = { opacity: 0.75, snow: true, rate: 20, open: true };
+// Folded to its chip until the visitor opens it.
+const DEFAULTS: Settings = { opacity: 0.75, snow: true, rate: 20, open: false };
+/** Settings saved before the box started folded carry an `open: true` nobody chose; theirs is not kept. */
+const VERSION = 2;
 
 function readSettings(): Settings {
   const out = { ...DEFAULTS };
@@ -126,7 +129,7 @@ function readSettings(): Settings {
     if (typeof saved?.opacity === 'number') out.opacity = Math.min(1, Math.max(0.2, saved.opacity));
     if (typeof saved?.snow === 'boolean') out.snow = saved.snow;
     if (RATES.includes(saved?.rate)) out.rate = saved.rate;
-    if (typeof saved?.open === 'boolean') out.open = saved.open;
+    if (saved?.v === VERSION && typeof saved?.open === 'boolean') out.open = saved.open;
   } catch { /* storage blocked or corrupt */ }
   return out;
 }
@@ -205,7 +208,7 @@ export default function RainBar({ mapRef, mapStyle, controls = true, onOff }: {
   useEffect(() => { loadedRef.current = loaded; }, [loaded]);
 
   useEffect(() => {
-    try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch { /* storage blocked */ }
+    try { localStorage.setItem(STORE, JSON.stringify({ ...settings, v: VERSION })); } catch { /* storage blocked */ }
   }, [settings]);
 
   useEffect(() => { timeRef.current = time; }, [time]);
